@@ -11,8 +11,8 @@
 - **2026-09** — Uploaded and updated the Isaac Sim 5.1 task dataset.
 
 > [!IMPORTANT]
-> The `main` branch targets Isaac Sim 5.1, while the `isaac45` branch preserves
-> support for Isaac Sim 4.5. The Isaac Sim 5.1 release delivers up to **5x
+> The `main` branch targets Isaac Sim 4.5, while the `isaac51` branch
+> supports Isaac Sim 5.1. The Isaac Sim 5.1 release delivers up to **5x
 > higher data-collection throughput** than the Isaac Sim 4.5 version and
 > supports NVIDIA RTX 40- and 50-series GPUs. Data collected with the two
 > versions is not cross-compatible. Both Isaac Sim 4.5 and 5.1 task datasets
@@ -21,7 +21,7 @@
 
 ## Installation
 
-The `main` branch targets Isaac Sim 5.1.0 and Isaac Lab 2.3.0. The installer creates or updates a Conda environment named `UniVTAC` with Python 3.11 and CUDA 12.6, then installs the modified local TacEx, libuipc and cuRobo dependencies.
+The `main` branch targets Isaac Sim 4.5.0 and Isaac Lab 2.1.1. Run `scripts/install.sh` to set up the `UniVTAC` Conda environment with Python 3.10 and install Isaac Sim, Isaac Lab, TacEx, and cuRobo.
 
 ```bash
 git clone https://github.com/univtac/UniVTAC.git
@@ -29,7 +29,7 @@ cd UniVTAC
 bash scripts/install.sh
 ```
 
-See the [Installation Guide](./docs/Installation.md) for CUDA/compiler prerequisites and verification, and the [migration notes](./docs/isaacsim_5_1_migration.md) for the new GelSight, Actor and render-pipeline behavior.
+See the [Installation Guide](./docs/Installation.md) for detailed setup instructions, including installing the environment, installing TacEx from the modified local source and setting up cuRobo for motion planning.
 
 ## Task Gallery
 
@@ -65,11 +65,13 @@ layout is:
 | `checkpoints/` | Policy checkpoints, metadata, dataset statistics, logs, and the shared tactile encoder; the current checkpoint release is trained for the Isaac Sim 4.5 dataset only |
 
 Task trajectories are stored under `hdf5/*.hdf5`. Because simulator versions
-are not interchangeable, downloading task data requires an explicit version:
+are not interchangeable, downloading task data requires an explicit version.
+Use `--version 45` with this `main` branch; use `--version 51` with the
+`isaac51` branch:
 
 ```bash
-# All Isaac Sim 5.1 task demonstrations
-bash data/download.sh --task --version 51
+# All Isaac Sim 4.5 task demonstrations for main
+bash data/download.sh --task --version 45
 
 # One Isaac Sim 4.5 task
 bash data/download.sh --task lift_can --version 45
@@ -79,7 +81,7 @@ bash data/download.sh --contact
 bash data/download.sh --checkpoint
 
 # Select multiple components in one invocation
-bash data/download.sh --task --version 51 --contact --checkpoint
+bash data/download.sh --task --version 45 --contact --checkpoint
 ```
 
 Selectors may be narrowed and repeated, for example

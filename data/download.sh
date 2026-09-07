@@ -19,17 +19,17 @@ usage() {
   --checkpoint [TASK]    下载全部 checkpoint 或指定任务的 checkpoint
 
 选择器可以重复，例如：
-  --task lift_can --task insert_hole --version 51
+  --task lift_can --task insert_hole --version 45
 
 示例：
-  bash data/download.sh --task --version 51
+  bash data/download.sh --task --version 45
   bash data/download.sh --task lift_can --version 45
   bash data/download.sh --contact
   bash data/download.sh --checkpoint
-  bash data/download.sh --task --version 51 --contact --checkpoint
+  bash data/download.sh --task --version 45 --contact --checkpoint
 
 选项：
-  --version 45|51        task 数据对应的 Isaac Sim 版本
+  --version 45|51        task 数据对应的 Isaac Sim 版本（main 使用 45，isaac51 分支使用 51）
   --revision REVISION    数据集 revision，默认 master
   --output DIR           下载根目录，默认 data/
   --workers N            并行下载 worker 数，默认 8
