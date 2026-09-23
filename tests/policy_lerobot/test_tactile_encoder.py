@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from policy.lerobot import tactile_encoder as te
+from policy.lerobot.tactile import ftp1_encoder as te
 
 
 def test_preprocess_resizes_scales_and_permutes():

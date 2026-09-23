@@ -1,12 +1,12 @@
-"""Bridge encoding: wire round trip, observation trimming on the Isaac side, batch building on the lerobot side."""
+"""Bridge encoding: wire round trip, observation trimming on the Isaac side, batch building and app routes on the lerobot side."""
 
 import numpy as np
 import pytest
 import torch
 
-from policy.lerobot import deploy_policy as dp
-from policy.lerobot import wire
-from policy.lerobot.server import build_batch
+from policy.lerobot.bridge import observation as obs_mod
+from policy.lerobot.bridge import wire
+from policy.lerobot.bridge.batch import build_batch
 
 
 def test_wire_roundtrip_preserves_arrays_and_scalars():
@@ -25,7 +25,7 @@ def test_wire_roundtrip_preserves_arrays_and_scalars():
     assert out["nested"] == [1.5, None, {"flag": True}]
 
 
-def _sim_observation(dtype=torch.uint8, tactile_key="left_tactile"):
+def sim_observation(dtype=torch.uint8, tactile_key="left_tactile"):
     def img(h, w):
         x = torch.randint(0, 255, (h, w, 3), dtype=torch.uint8)
         return x if dtype == torch.uint8 else x.float() / 255.0
@@ -42,8 +42,8 @@ def _sim_observation(dtype=torch.uint8, tactile_key="left_tactile"):
 
 @pytest.mark.parametrize("dtype", [torch.uint8, torch.float32])
 def test_select_observation_keeps_only_bridge_inputs(dtype):
-    obs = _sim_observation(dtype)
-    out = dp.select_observation(obs, ("head",))
+    obs = sim_observation(dtype)
+    out = obs_mod.select_observation(obs, ("head",))
     assert set(out) == {"images", "tactile", "joint"}
     assert list(out["images"]) == ["head"]
     assert out["images"]["head"].shape == (270, 480, 3) and out["images"]["head"].dtype == np.uint8
@@ -56,27 +56,27 @@ def test_select_observation_keeps_only_bridge_inputs(dtype):
 
 
 def test_select_observation_accepts_gsmini_alias_and_all_cameras():
-    out = dp.select_observation(_sim_observation(tactile_key="left_gsmini"), ("head", "wrist"))
+    out = obs_mod.select_observation(sim_observation(tactile_key="left_gsmini"), ("head", "wrist"))
     assert list(out["images"]) == ["head", "wrist"]
     assert set(out["tactile"]) == {"left", "right"}
 
 
 def test_select_observation_reports_missing_streams():
-    obs = _sim_observation()
+    obs = sim_observation()
     del obs["tactile"]["right_tactile"]
     with pytest.raises(KeyError):
-        dp.select_observation(obs, ("head",))
+        obs_mod.select_observation(obs, ("head",))
 
 
 def test_cameras_for_task(tmp_path):
     settings = tmp_path / "task_settings.json"
     settings.write_text('{"lift_can": {"camera_type": "all"}}')
-    assert dp.cameras_for_task("lift_can", settings) == ("head", "wrist")
-    assert dp.cameras_for_task("insert_hole", settings) == ("head",)
+    assert obs_mod.cameras_for_task("lift_can", settings) == ("head", "wrist")
+    assert obs_mod.cameras_for_task("insert_hole", settings) == ("head",)
 
 
 def test_build_batch_matches_dataset_contract():
-    obs = dp.select_observation(_sim_observation(), ("head",))
+    obs = obs_mod.select_observation(sim_observation(), ("head",))
     seen = {}
 
     def fake_embed(images_bgr):
@@ -100,7 +100,7 @@ def test_server_routes_take_json_bodies():
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
 
-    from policy.lerobot.server import create_app
+    from policy.lerobot.bridge.app import create_app
 
     client = TestClient(create_app("key"))
     assert client.get("/health", headers={"X-Lerobot-Auth": "key"}).json() == {"status": "ok", "model_loaded": False}
