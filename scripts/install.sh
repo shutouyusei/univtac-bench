@@ -236,6 +236,10 @@ echo "[3/7] Installing the vendored TacEx core and assets."
     -e "${PROJECT_ROOT}/third_party/TacEx/source/tacex" \
     -e "${PROJECT_ROOT}/third_party/TacEx/source/tacex_assets"
 "${PIP[@]}" install pybind11 mypy transforms3d tetgen "polyscope>=2.5,<3"
+# policy/ACT imports IPython at module level (ALOHA leftover), so the deploy
+# path fails without it; policy/ACT/conda_env.yaml lists it as a dependency.
+# IPython 9 requires psutil>=7, which conflicts with isaacsim-kernel's pin.
+"${PIP[@]}" install "ipython<9"
 
 echo "[4/7] Preparing the pinned vcpkg toolchain."
 if [[ ! -x "${VCPKG_ROOT}/vcpkg" ]]; then
