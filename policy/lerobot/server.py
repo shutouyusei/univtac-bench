@@ -23,6 +23,7 @@ from typing import Callable
 
 import cv2
 import numpy as np
+from fastapi import FastAPI, Header, HTTPException, Request
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
@@ -110,9 +111,9 @@ class LocalPolicy:
         self.policy.reset()
 
 
-def create_app(authkey: str):
-    from fastapi import FastAPI, Header, HTTPException, Request
-
+def create_app(authkey: str) -> FastAPI:
+    # FastAPI resolves the (postponed) annotations of the route functions
+    # against this module's globals, so Request/Header must be imported here.
     app = FastAPI(title="UniVTAC lerobot inference server")
     app.state.authkey = authkey
     app.state.model = None

@@ -93,3 +93,20 @@ def test_build_batch_matches_dataset_contract():
     # encoder sees left then right, in BGR
     assert seen["images"].shape == (2, 240, 320, 3)
     np.testing.assert_array_equal(seen["images"][0][..., 0], obs["tactile"]["left"][..., 2])
+
+
+def test_server_routes_take_json_bodies():
+    """Regression: route parameters must resolve to Request/Header, not query fields (HTTP 422)."""
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    from policy.lerobot.server import create_app
+
+    client = TestClient(create_app("key"))
+    assert client.get("/health", headers={"X-Lerobot-Auth": "key"}).json() == {"status": "ok", "model_loaded": False}
+    assert client.get("/health").status_code == 401
+    r = client.post("/init", json={"authkey": "key", "args": {"lerobot_ckpt_dir": "/nonexistent/ckpt"}})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["type"] == "error" and "FileNotFoundError" in body["error"]
+    assert client.post("/act", json={"authkey": "key", "observation": {}}).status_code == 409
