@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -52,8 +53,12 @@ def main() -> None:
     cfg.render_frequency = 0
 
     task = None
+    failed = False
     try:
-        task = Task(cfg, mode="eval_test")
+        # The robot config only knows the collect/eval gain sets; eval_policy.py
+        # also builds the task in eval mode and switches to eval_test afterwards.
+        task = Task(cfg, mode="eval")
+        task.mode = "eval_test"
         assert task.num_envs == 1
         assert len(task._tactile_manager.tactiles) == 2
 
@@ -128,11 +133,17 @@ def main() -> None:
         # SimulationApp.close() can replace Kit's active exception hook during
         # shutdown, so emit the original failure before closing the app.
         traceback.print_exc()
-        raise
+        failed = True
     finally:
+        # Kit's close path ends the process without flushing a redirected stdout,
+        # which would drop the PASS line when the log goes to a file.
+        sys.stdout.flush()
         if task is not None:
             task.close()
         simulation_app.close()
+        if failed:
+            # Kit's close path swallows a re-raised exception and exits 0.
+            os._exit(1)
 
 
 if __name__ == "__main__":
