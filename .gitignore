@@ -46,3 +46,6 @@ policy/T3/outputs
 policy/T3/checkpoints
 
 encoder/ablation/supervision
+
+# scripts/dry_test_policy.py output
+/dry_eval_result

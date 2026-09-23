@@ -144,3 +144,5 @@ dmypy.json
 
 act-ckpt/
 processed_data/
+# written by process_data.py for the datasets converted on this machine
+SIM_TASK_CONFIGS.json
