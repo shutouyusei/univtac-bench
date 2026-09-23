@@ -58,3 +58,4 @@ encoder/ablation/supervision
 
 # Claude Code worktrees
 /.claude/worktrees
+/policy/lerobot/data
