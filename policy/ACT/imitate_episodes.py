@@ -64,8 +64,12 @@ def main(args):
     state_dim = args["state_dim"]
     tactile_names = args["tactile_names"]
     chunk_size = args["chunk_size"]
+    # build_ACT_model_and_optimizer only uses this dict as-is when it carries
+    # num_epochs; otherwise it re-parses sys.argv with DETR's own required
+    # flags, which train.sh never passes. The loop itself is step-based.
+    args.setdefault("num_epochs", 6000)
     config = {
-        "num_epochs": 6000,
+        "num_epochs": args["num_epochs"],
         "ckpt_dir": ckpt_dir,
         "episode_len": episode_len,
         "state_dim": state_dim,

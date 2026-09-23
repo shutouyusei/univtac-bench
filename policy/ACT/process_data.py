@@ -26,6 +26,10 @@ def main(task_name, task_config, expert_data_num):
     # ACT's train configs and deploy_policy.py address the head camera as
     # cam_high, while the shared preprocessor saves it as cam_head.
     processor.camera_key_map['visual/head']['save_key'] = 'cam_high'
+    # The recorded joint vector has 7 arm + 2 finger values; ACT's state_dim is
+    # 8 (7 arm + 1 gripper) and deploy_policy.py feeds joint[:8], so drop the
+    # second finger from both qpos and action.
+    processor.joint_transform = lambda joints: joints[:, :8]
     metadata = processor.run(
         save_root_path=output_path,
         visual_cameras=visual_cameras,
