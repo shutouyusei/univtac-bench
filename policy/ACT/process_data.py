@@ -23,6 +23,9 @@ def main(task_name, task_config, expert_data_num):
     downsample_factor = task_settings.get(task_name, {}).get('downsample_factor', 1)
  
     processor = BaseDataPreprocessor(task_name, task_config)
+    # ACT's train configs and deploy_policy.py address the head camera as
+    # cam_high, while the shared preprocessor saves it as cam_head.
+    processor.camera_key_map['visual/head']['save_key'] = 'cam_high'
     metadata = processor.run(
         save_root_path=output_path,
         visual_cameras=visual_cameras,
