@@ -180,7 +180,8 @@ for package, wanted in expected.items():
         print(f"[missing] {package}")
         failed = True
         continue
-    ok = installed == wanted
+    # Wheels from the PyTorch index carry a local version tag (2.7.0+cu128).
+    ok = installed.split("+")[0] == wanted
     print(f"[{'ok' if ok else 'wrong'}] {package}=={installed}")
     failed |= not ok
 
