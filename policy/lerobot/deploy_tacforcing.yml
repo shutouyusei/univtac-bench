@@ -3,7 +3,9 @@ policy_name: lerobot
 seed: 0
 ckpt_setting: 50
 instruction_type: seen
-instuction_file: null
+# instuction_file is left unset on purpose: eval_policy.py then reads
+# instructions/<task>.json and task.instruction carries the real sentence the
+# dataset was converted with (a null value would send "Empty" to the VLA).
 
 # pretrained_model directory written by policy/lerobot/train.sh (relative to the repo root)
 lerobot_ckpt_dir: policy/lerobot/outputs/train/tacforcing_insert_hole-clean51-50/checkpoints/last/pretrained_model
