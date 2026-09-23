@@ -20,9 +20,9 @@ INSTALL_REQUIRES = [
     #     "torch_scatter @"
     #     " https://data.pyg.org/whl/torch-2.5.0%2Bcu118/torch_scatter-2.1.2%2Bpt25cu118-cp310-cp310-linux_x86_64.whl"
     # ),
-    (  # Isaac Sim 5.1 ships Python 3.11, PyTorch 2.7 and CUDA 12.6
+    (  # Isaac Sim 5.1 ships Python 3.11 and PyTorch 2.7; CUDA 12.8 is needed for sm_120 (RTX 50-series)
         "torch_scatter @"
-        "https://data.pyg.org/whl/torch-2.7.0%2Bcu126/torch_scatter-2.1.2%2Bpt27cu126-cp311-cp311-linux_x86_64.whl"
+        "https://data.pyg.org/whl/torch-2.7.0%2Bcu128/torch_scatter-2.1.2%2Bpt27cu128-cp311-cp311-linux_x86_64.whl"
     ),
     "psutil",
     "nvidia-ml-py",
