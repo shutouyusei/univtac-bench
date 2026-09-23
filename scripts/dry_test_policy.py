@@ -171,6 +171,11 @@ class DryTask:
             "joint_action": joint.clone(),
         }
 
+    def get_frame_shot(self, obs):
+        # ACT and ViTAL adapters periodically save a frame; the real task
+        # composes camera and tactile panels into one HWC uint8 image.
+        return obs["observation"]["head"]["rgb"].clone()
+
     def take_action(self, action, action_type="qpos"):
         torch = _torch()
 
