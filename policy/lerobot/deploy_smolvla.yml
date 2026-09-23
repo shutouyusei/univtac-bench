@@ -1,0 +1,19 @@
+# Stock SmolVLA (lerobot/smolvla_base fine-tuned by train.sh smolvla) served from the lerobot env.
+policy_name: lerobot
+seed: 0
+ckpt_setting: 50
+instruction_type: seen
+# instuction_file is left unset on purpose: eval_policy.py then reads
+# instructions/<task>.json and task.instruction carries the real sentence the
+# dataset was converted with (a null value would send "Empty" to the VLA).
+
+# pretrained_model directory written by policy/lerobot/train.sh (relative to the repo root)
+lerobot_ckpt_dir: policy/lerobot/outputs/train/smolvla_insert_hole-clean51-50/checkpoints/last/pretrained_model
+# camera frame size and tactile embedding the dataset was converted with
+lerobot_image_size: 256
+lerobot_tactile_embedding: cls
+# interpreter of the lerobot env; null -> $LEROBOT_PYTHON or ~/miniforge3/envs/lerobot/bin/python
+lerobot_python: null
+# 0 starts a private server on a free port; set to connect to a running server.py
+lerobot_port: 0
+lerobot_device: cuda
