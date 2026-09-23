@@ -49,3 +49,12 @@ encoder/ablation/supervision
 
 # scripts/dry_test_policy.py output
 /dry_eval_result
+
+# lerobot bridge (policy/lerobot): training outputs and checkpoints
+/outputs
+/wandb
+/policy/lerobot/outputs
+/policy/lerobot/checkpoints
+
+# Claude Code worktrees
+/.claude/worktrees
