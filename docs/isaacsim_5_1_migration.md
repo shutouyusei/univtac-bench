@@ -15,11 +15,11 @@ conda activate UniVTAC
 
 The installer first applies TacEx's libuipc Conda YAML, then installs Isaac Sim,
 Isaac Lab, the local TacEx packages, vendored libuipc, and cuRobo into that same
-environment. CUDA is uniformly pinned to 12.6. See [Install.md](./Install.md)
+environment. CUDA is uniformly pinned to 12.8. See [Install.md](./Install.md)
 for prerequisites, exact versions, and validation.
 
 The TacEx Taxim dependency is pinned to the Python 3.11 / PyTorch 2.7 / CUDA
-12.6 `torch_scatter` wheel used by Isaac Sim 5.1 (the upstream branch still
+12.8 `torch_scatter` wheel (the upstream branch still
 contained a Python 3.10 / PyTorch 2.8 URL).
 
 ## GelSight optical backend

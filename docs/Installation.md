@@ -8,9 +8,9 @@ The `isaac51` branch uses the following fixed environment:
 | Python | 3.11 |
 | Isaac Sim | 5.1.0 |
 | Isaac Lab | 2.3.0 |
-| PyTorch | 2.7.0 + cu126 |
+| PyTorch | 2.7.0 + cu128 |
 | TacEx / libuipc | vendored sources under `third_party/TacEx` |
-| CUDA toolkit | Conda CUDA toolkit 12.6 |
+| CUDA toolkit | Conda CUDA toolkit 12.8 |
 | Host compiler | Conda GCC/G++ 12 |
 
 Do not install public TacEx over this environment. UniVTAC depends on the
@@ -19,11 +19,13 @@ changes.
 
 ## CUDA version
 
-The complete environment uses CUDA 12.6. This matches Isaac Sim 5.1's PyTorch
-2.7.0 cu126 runtime and the toolkit used to build the already-validated UIPC
-and cuRobo extensions. The TacEx/libuipc Conda YAML is pinned to
-`cuda-toolkit=12.6`; do not update it to CUDA 13 for this branch because
-PyTorch rejects CUDA extensions compiled with a different major version.
+The complete environment uses CUDA 12.8: the Conda toolkit, the PyTorch
+2.7.0 cu128 wheels, and the UIPC and cuRobo extensions built against them.
+CUDA 12.8 is the first release that targets sm_120 (RTX 50-series); upstream
+UniVTAC pins 12.6, which cannot compile for or run on those GPUs. The
+TacEx/libuipc Conda YAML is pinned to `cuda-toolkit=12.8`; do not update it to
+CUDA 13 for this branch because PyTorch rejects CUDA extensions compiled with
+a different major version.
 
 ## Prerequisites
 
@@ -56,12 +58,12 @@ The installer performs these operations in order:
 1. Creates `UniVTAC` with Python 3.11, or reuses the named environment.
 2. Immediately runs `conda env update` with
    `third_party/TacEx/source/tacex_uipc/libuipc/conda/env.yaml`. This installs
-   CUDA 12.6, CMake 3.26, Ninja, and GCC/G++ 12.
-3. Installs PyTorch 2.7.0/torchvision 0.22.0 from the cu126 index, followed by
+   CUDA 12.8, CMake 3.26, Ninja, and GCC/G++ 12.
+3. Installs PyTorch 2.7.0/torchvision 0.22.0 from the cu128 index, followed by
    Isaac Sim 5.1 and Isaac Lab 2.3.0 in the same Conda environment.
 4. Installs the vendored TacEx core/assets and builds vendored libuipc with
-   Conda CUDA 12.6.
-5. Builds the pinned cuRobo revision with the same CUDA 12.6 toolkit.
+   Conda CUDA 12.8.
+5. Builds the pinned cuRobo revision with the same CUDA 12.8 toolkit.
 6. Checks package compatibility, exact versions, and compiled imports.
 
 The script does not create `.venv` and does not modify shell startup files. An
@@ -72,14 +74,14 @@ To use another environment name or GPU architecture:
 
 ```bash
 UNIVTAC_CONDA_ENV=UniVTAC-isaac51 \
-UNIVTAC_CUDA_ARCH=89 \
+UNIVTAC_CUDA_ARCH=120 \
 UNIVTAC_BUILD_JOBS=4 \
 bash scripts/install.sh
 ```
 
-`UNIVTAC_CUDA_ARCH` accepts either `89` or `8.9`. The default targets the RTX
-40-series GPU used for phase-one validation. Set the correct compute capability
-for another GPU.
+`UNIVTAC_CUDA_ARCH` accepts either `120` or `12.0`. The default targets the RTX
+5090 this fork is developed on; pass `89` for an RTX 40-series GPU. Set the
+correct compute capability for another GPU.
 
 If vcpkg is already available, set `UNIVTAC_VCPKG_ROOT`. Otherwise the pinned
 revision is cloned under the ignored project-local `.cache/toolchains/vcpkg`
@@ -134,7 +136,7 @@ assets; the installer does not download another copy.
   break environment solving.
 - If the UIPC build directory was created by another Python environment or
   vcpkg path, the installer removes that generated CMake cache before rebuilding.
-- If a build reports that detected CUDA does not match PyTorch CUDA 12.6,
+- If a build reports that detected CUDA does not match PyTorch CUDA 12.8,
   check that `CUDA_HOME`, `CUDA_PATH`, and `nvcc` all resolve inside the active
   Conda environment. Do not leave a CUDA 13 path exported in the parent shell.
 - If libuipc is killed by the OOM killer, retry with
