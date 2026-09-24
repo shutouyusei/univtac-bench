@@ -9,7 +9,9 @@ and executes the returned joint target with ``take_action(..., "qpos")``.
 
 deploy_*.yml keys (all optional except ``lerobot_ckpt_dir``):
 
-* ``lerobot_ckpt_dir``          ``pretrained_model`` directory of a lerobot-train run
+* ``lerobot_ckpt_dir``          ``pretrained_model`` directory of a lerobot-train run;
+                                the ``LEROBOT_CKPT_DIR`` environment variable overrides it,
+                                so one deploy yml serves every run of the same policy type
 * ``lerobot_python``            interpreter of the lerobot env (default ``$LEROBOT_PYTHON``
                                 or ``~/miniforge3/envs/lerobot/bin/python``)
 * ``lerobot_port``              0 starts a server on a free port; otherwise connect to a running one
@@ -20,6 +22,7 @@ deploy_*.yml keys (all optional except ``lerobot_ckpt_dir``):
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -37,6 +40,9 @@ class Policy(BasePolicy):
     def __init__(self, args: dict):
         self.task_name = args["task_name"]
         self.cameras = cameras_for_task(self.task_name)
+        if os.environ.get("LEROBOT_CKPT_DIR"):
+            args = {**args, "lerobot_ckpt_dir": os.environ["LEROBOT_CKPT_DIR"]}
+            print(f"[lerobot-bridge] LEROBOT_CKPT_DIR overrides lerobot_ckpt_dir: {args['lerobot_ckpt_dir']}")
         self.model = connect(args)
         self._instruction: str | None = None
 

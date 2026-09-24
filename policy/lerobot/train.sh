@@ -4,9 +4,13 @@
 #   bash policy/lerobot/train.sh smolvla    policy/lerobot/data/local/insert_hole-clean51-50 300
 #   bash policy/lerobot/train.sh tacforcing policy/lerobot/data/local/insert_hole-clean51-50 300 [extra lerobot-train args]
 #
-# Output: policy/lerobot/outputs/train/<policy>_<dataset name>/checkpoints/last/pretrained_model
-# (the directory deploy_<policy>.yml points at). Env: LEROBOT_PYTHON (default
-# ~/miniforge3/envs/lerobot/bin/python), BATCH_SIZE (8), WANDB (0).
+# Output: policy/lerobot/outputs/train/<run name>/checkpoints/last/pretrained_model
+# where <run name> is RUN_NAME if set, else <policy>_<dataset name> (the directory
+# deploy_<policy>.yml points at). RUN_NAME is also the wandb run name; set it when
+# one policy type is trained in several variants (e.g. tacforcing with
+# --policy.block_size=50) so the runs do not overwrite each other.
+# Env: LEROBOT_PYTHON (default ~/miniforge3/envs/lerobot/bin/python),
+# BATCH_SIZE (8), WANDB (0), RUN_NAME.
 #
 # smolvla:    lerobot/smolvla_base fine-tuned as is; the dataset's head camera is
 #             renamed to the checkpoint's camera1 (wrist -> camera2 for two-camera
@@ -39,7 +43,7 @@ print(json.dumps({f"observation.images.{c}": f"observation.images.camera{i + 1}"
 EOF
 )"
 
-NAME="${POLICY}_$(basename "$DATASET")"
+NAME="${RUN_NAME:-${POLICY}_$(basename "$DATASET")}"
 OUT="policy/lerobot/outputs/train/${NAME}"
 WANDB_ARGS=(--wandb.enable=false)
 if [ "${WANDB:-0}" = "1" ]; then

@@ -1,0 +1,22 @@
+# tacforcing plugin trained with --policy.block_size=50: one block per chunk, so the
+# chunk is generated from the tactile reading at its start only (the paper's
+# "Fixed Tactile" ablation). Same server code as deploy_tacforcing.yml; the
+# block size is read from the checkpoint. Point LEROBOT_CKPT_DIR at that run.
+policy_name: lerobot
+seed: 0
+ckpt_setting: 50
+instruction_type: seen
+# instuction_file is left unset on purpose: eval_policy.py then reads
+# instructions/<task>.json and task.instruction carries the real sentence the
+# dataset was converted with (a null value would send "Empty" to the VLA).
+
+# pretrained_model directory written by policy/lerobot/train.sh (relative to the repo root)
+lerobot_ckpt_dir: policy/lerobot/outputs/train/fixedtactile_insert_hole-clean51-50/checkpoints/last/pretrained_model
+# camera frame size and tactile embedding the dataset was converted with
+lerobot_image_size: 256
+lerobot_tactile_embedding: cls
+# interpreter of the lerobot env; null -> $LEROBOT_PYTHON or ~/miniforge3/envs/lerobot/bin/python
+lerobot_python: null
+# 0 starts a private server on a free port; set to connect to a running server.py
+lerobot_port: 0
+lerobot_device: cuda
