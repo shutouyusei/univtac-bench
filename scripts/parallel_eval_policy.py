@@ -74,6 +74,7 @@ def worker_run(args, deploy_config, task_config, task_config_name, task_file_nam
     app_args.enable_cameras = True
     app_args.livestream = 2
     app_args.num_envs = 1
+    app_args.headless = bool(args.headless)
 
     app_launcher = AppLauncher(app_args)
     simulation_app = app_launcher.app
@@ -220,6 +221,11 @@ def main():
     parser.add_argument("deploy_config", type=str, help="Deploy file name")
     parser.add_argument("--workers", type=int, default=2, help="Number of worker processes")
     parser.add_argument("--total_num", type=int, default=100, help="Total tests across all workers")
+    parser.add_argument("--start_seed", type=int, default=-1,
+                        help="First seed (default 1000000 * (1 + deploy seed), as eval_policy.py)")
+    parser.add_argument("--max_seed", type=int, default=-1,
+                        help="Never hand out a seed above this; the run ends early instead of retrying forever")
+    parser.add_argument("--headless", action="store_true", help="Run the Isaac app headless")
     parser.add_argument("--gpu", type=str, default=os.environ.get('CUDA_VISIBLE_DEVICES', ''),
                         help="CUDA_VISIBLE_DEVICES list to split among workers")
     add_config_override_argument(parser)
@@ -282,8 +288,35 @@ def main():
 
     # Dynamic seed generation so errors don't count toward total_num
     # Start seed aligned with original logic: base 1,000,000 offset if needed
-    start_seed = 1000000 * (1 + deploy_config.get("seed", 0))
+    start_seed = 1000000 * (1 + deploy_config.get("seed", 0)) if args.start_seed == -1 else args.start_seed
     next_seed = start_seed
+    stopping = False
+
+    def take_seed():
+        """Next seed to hand out, or None once total_num seeds (plus one per error) or max_seed are reached."""
+        nonlocal next_seed
+        handed = next_seed - start_seed
+        if handed >= args.total_num + progress.get('errors', 0):
+            return None
+        if args.max_seed != -1 and next_seed > args.max_seed:
+            return None
+        seed, next_seed = next_seed, next_seed + 1
+        return seed
+
+    def take_seed_exhausted():
+        handed = next_seed - start_seed
+        return handed >= args.total_num + progress.get('errors', 0) or (args.max_seed != -1 and next_seed > args.max_seed)
+
+    def idle_workers():
+        return sum(1 for st in worker_status if st.get('state') == 'idle')
+
+    def stop_workers():
+        nonlocal stopping
+        if not stopping:
+            stopping = True
+            for _ in range(args.workers):
+                seed_q.put(None)
+            stop_event.set()
 
     # GPU allocation
     assignments = split_devices(args.gpu, args.workers)
@@ -301,6 +334,8 @@ def main():
         'cuda_assignments': assignments,
         'save_dir': str(base_save_dir),
         'start_seed': start_seed,
+        'max_seed': args.max_seed,
+        'headless': args.headless,
     }, ensure_ascii=False, indent=4)
     write_clean(params_json)
     write_out(params_json)
@@ -337,10 +372,12 @@ def main():
         last_update = 0
         last_render = 0
         last_block = ""
-        # Prime the queue with up to workers seeds to start
+        done = 0
+        # Prime the queue with one seed per worker; every finished seed then hands out one more
         for _ in range(args.workers):
-            seed_q.put(next_seed)
-            next_seed += 1
+            seed = take_seed()
+            if seed is not None:
+                seed_q.put(seed)
 
         while any(p.is_alive() for p in workers):
             # Drain results queue and log clean summaries
@@ -359,21 +396,15 @@ def main():
                         write_clean(f"{prefix} error; see out.log for traceback")
                     write_out(f"{prefix} result={event['result']} cost={event['cost']} steps={event['steps']} actions={event['actions']}")
 
-                    if done < args.total_num:
-                        # Feed more seeds; try to keep queue non-empty
-                        # Put a few seeds per iteration to avoid starvation
-                        for _ in range(args.workers):
-                            seed_q.put(next_seed)
-                            next_seed += 1
-                    else:
-                        # Signal workers to stop once target reached
-                        for _ in range(args.workers):
-                            seed_q.put(None)
-                        # Wait for workers to drain and exit
-                        stop_event.set()
+                    seed = take_seed()
+                    if seed is not None:
+                        seed_q.put(seed)
 
             # Keep feeding seeds until reaching target completed (done)
             done = progress.get('done', 0)
+            if done >= args.total_num or (take_seed_exhausted() and seed_q.empty() and idle_workers() == args.workers):
+                stop_workers()
+
             pbar.n = done
             pbar.refresh()
 
