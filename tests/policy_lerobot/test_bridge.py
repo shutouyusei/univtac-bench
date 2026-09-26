@@ -110,3 +110,28 @@ def test_server_routes_take_json_bodies():
     body = r.json()
     assert body["type"] == "error" and "FileNotFoundError" in body["error"]
     assert client.post("/act", json={"authkey": "key", "observation": {}}).status_code == 409
+
+
+def test_build_batch_channel_flips_follow_flags():
+    """flip_cameras swaps the camera channels, flip_tactile decides whether the encoder sees the frame swapped."""
+    obs = obs_mod.select_observation(sim_observation(), ("head",))
+    seen = {}
+
+    def fake_embed(images):
+        seen["images"] = images
+        return np.zeros((len(images), 4), np.float32)
+
+    head = cv2_resize_rgb(obs["images"]["head"])
+    batch = build_batch(obs, fake_embed, "x", image_size=256, flip_cameras=True, flip_tactile=False)
+    np.testing.assert_array_equal((batch["observation.images.head"][0] * 255).round().numpy(), head[..., 2])
+    np.testing.assert_array_equal(seen["images"][0], obs["tactile"]["left"])
+
+    batch = build_batch(obs, fake_embed, "x", image_size=256, flip_cameras=False, flip_tactile=True)
+    np.testing.assert_array_equal((batch["observation.images.head"][0] * 255).round().numpy(), head[..., 0])
+    np.testing.assert_array_equal(seen["images"][0], obs["tactile"]["left"][..., ::-1])
+
+
+def cv2_resize_rgb(img):
+    import cv2
+
+    return cv2.resize(img, (256, 256), interpolation=cv2.INTER_LINEAR)

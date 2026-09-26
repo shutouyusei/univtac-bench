@@ -17,6 +17,10 @@ deploy_*.yml keys (all optional except ``lerobot_ckpt_dir``):
 * ``lerobot_port``              0 starts a server on a free port; otherwise connect to a running one
 * ``lerobot_tactile_embedding`` ``cls`` or ``proj``, must match the training dataset
 * ``lerobot_image_size``        camera frame size the dataset was converted with
+* ``lerobot_flip_cameras``      swap the camera channel order before the policy (default false);
+                                ``LEROBOT_FLIP_CAMERAS`` overrides
+* ``lerobot_flip_tactile``      swap the fingertip channel order before the tactile encoder
+                                (default true); ``LEROBOT_FLIP_TACTILE`` overrides
 * ``lerobot_retries``, ``lerobot_request_timeout``, ``lerobot_startup_timeout``
 """
 
@@ -40,9 +44,14 @@ class Policy(BasePolicy):
     def __init__(self, args: dict):
         self.task_name = args["task_name"]
         self.cameras = cameras_for_task(self.task_name)
-        if os.environ.get("LEROBOT_CKPT_DIR"):
-            args = {**args, "lerobot_ckpt_dir": os.environ["LEROBOT_CKPT_DIR"]}
-            print(f"[lerobot-bridge] LEROBOT_CKPT_DIR overrides lerobot_ckpt_dir: {args['lerobot_ckpt_dir']}")
+        for env, key in (
+            ("LEROBOT_CKPT_DIR", "lerobot_ckpt_dir"),
+            ("LEROBOT_FLIP_CAMERAS", "lerobot_flip_cameras"),
+            ("LEROBOT_FLIP_TACTILE", "lerobot_flip_tactile"),
+        ):
+            if os.environ.get(env):
+                args = {**args, key: os.environ[env]}
+                print(f"[lerobot-bridge] {env} overrides {key}: {args[key]}")
         self.model = connect(args)
         self._instruction: str | None = None
 
