@@ -20,10 +20,6 @@ def split_transitions(joint: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return joint[:-1, :STATE_DIM], joint[1:, :STATE_DIM]
 
 
-def bgr_to_rgb(frames: np.ndarray) -> np.ndarray:
-    return np.ascontiguousarray(np.asarray(frames)[..., ::-1])
-
-
 def resize_frames(frames: np.ndarray, size: int) -> np.ndarray:
     """``(N, H, W, 3)`` -> ``(N, size, size, 3)`` with bilinear resampling (UniVTAC's visual_transform)."""
     frames = np.asarray(frames)

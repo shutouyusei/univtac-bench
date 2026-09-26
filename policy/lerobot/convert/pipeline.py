@@ -25,7 +25,7 @@ from .schema import (
     instruction_for,
     visual_cameras,
 )
-from .transforms import bgr_to_rgb, resize_frames, split_transitions, stack_fingertips
+from .transforms import resize_frames, split_transitions, stack_fingertips
 
 Embed = Callable[[np.ndarray], np.ndarray]
 
@@ -76,13 +76,17 @@ def image_shapes_for(episode: dict, cameras: tuple[str, ...], image_size: int, t
 def encode_episode(
     episode: dict, cameras: tuple[str, ...], embed: Embed, image_size: int, tactile_images: bool
 ) -> EpisodeFrames:
-    """Pair frames into transitions, resize the RGB cameras, embed both fingertips (BGR in)."""
+    """Pair frames into transitions, resize the cameras, embed both fingertips.
+
+    Frames keep the channel order they decode to, which is the simulator's RGB:
+    the same order the inference server sees live and FTP-1 was trained on.
+    """
     state, action = split_transitions(episode["joint"])
     n = len(state)
-    images = {CAMERA_KEYS[cam]: resize_frames(bgr_to_rgb(episode["cameras"][cam][:n]), image_size) for cam in cameras}
+    images = {CAMERA_KEYS[cam]: resize_frames(episode["cameras"][cam][:n], image_size) for cam in cameras}
     if tactile_images:
         for cam in TACTILE_CAMERAS:
-            images[TACTILE_IMAGE_KEYS[cam]] = bgr_to_rgb(episode["tactile"][cam][:n])
+            images[TACTILE_IMAGE_KEYS[cam]] = episode["tactile"][cam][:n]
     env_state = stack_fingertips([embed(episode["tactile"][cam][:n]) for cam in TACTILE_CAMERAS])
     return EpisodeFrames(state=state, action=action, env_state=env_state, images=images)
 

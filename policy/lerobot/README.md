@@ -36,8 +36,10 @@ Tests: `~/miniforge3/envs/lerobot/bin/python -m pytest tests/policy_lerobot`.
 | `observation.environment_state` | FTP-1 embedding of left then right `rgb_marker`, 2 x 768 (`cls`) or 2 x 512 (`proj`) |
 | `task` | first "seen" instruction of `instructions/<task>.json` |
 
-Fingertip images go to the encoder in BGR at 224x224 in [-1, 1], as FTP-1's own
-UniVTAC pipeline feeds them. Raw fingertip images are stored only with
+Camera and fingertip frames keep the channel order UniVTAC records them in
+(the simulator's RGB; the HDF5 stream decodes back to it), so training data,
+live inference and FTP-1's own UniVTAC pipeline all see the same colours.
+Fingertip images reach the encoder at 224x224 in [-1, 1]. Raw fingertip images are stored only with
 `--tactile-images` (lerobot would make them policy cameras).
 
 ## One loop on insert_hole
