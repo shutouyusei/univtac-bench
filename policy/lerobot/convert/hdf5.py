@@ -28,7 +28,11 @@ def select_episode_files(root: Path, episode_num: int) -> list[Path]:
 
 
 def decode_frames(buffers) -> np.ndarray:
-    """Encoded (JPEG/PNG) byte strings -> ``(N, H, W, 3)`` uint8 in cv2's BGR order."""
+    """Encoded (JPEG/PNG) byte strings -> ``(N, H, W, 3)`` uint8.
+
+    UniVTAC's writer runs ``cv2.imencode`` on the simulator's RGB array without
+    converting it, so decoding returns that array: the frames are RGB, not BGR.
+    """
     frames = []
     for buf in np.asarray(buffers).ravel():
         img = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
@@ -46,7 +50,7 @@ def tactile_stream_key(f: h5py.File, cam: str) -> str:
 
 
 def read_episode(path: Path, cameras: tuple[str, ...]) -> dict:
-    """One HDF5 episode -> joints, BGR camera frames per camera, BGR rgb_marker frames per fingertip."""
+    """One HDF5 episode -> joints, RGB camera frames per camera, RGB rgb_marker frames per fingertip."""
     with h5py.File(str(path), "r") as f:
         return {
             "joint": np.asarray(f["embodiment/joint"][()], dtype=np.float32),
