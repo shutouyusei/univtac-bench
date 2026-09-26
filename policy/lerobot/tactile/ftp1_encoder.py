@@ -13,8 +13,9 @@ dataset converter stores as ``observation.environment_state`` and the
 inference server recomputes on live frames.
 
 Input convention (matches FTP-1's UniVTAC pipeline): the ``rgb_marker`` frame
-in **BGR** channel order (FTP-1 decodes its training zarr with cv2), resized
-to 224x224, scaled to [-1, 1].
+in the channel order UniVTAC produces it (the simulator's RGB, which is also
+what ``cv2.imdecode`` of the HDF5 stream returns and what FTP-1 built its
+training zarr from), resized to 224x224, scaled to [-1, 1].
 """
 
 from __future__ import annotations
@@ -137,12 +138,12 @@ class FTP1GelSightEncoder(nn.Module):
         return cls if self.embedding == "cls" else self.image_proj(cls)
 
     @torch.no_grad()
-    def embed(self, images_bgr: np.ndarray, batch_size: int = 64) -> np.ndarray:
-        """``(N, H, W, 3)`` uint8 BGR frames -> ``(N, embedding_dim)`` float32."""
+    def embed(self, images: np.ndarray, batch_size: int = 64) -> np.ndarray:
+        """``(N, H, W, 3)`` uint8 ``rgb_marker`` frames -> ``(N, embedding_dim)`` float32."""
         device = next(self.parameters()).device
         out = []
-        for start in range(0, len(images_bgr), batch_size):
-            x = preprocess(images_bgr[start : start + batch_size]).to(device)
+        for start in range(0, len(images), batch_size):
+            x = preprocess(images[start : start + batch_size]).to(device)
             out.append(self(x).float().cpu().numpy())
         return np.concatenate(out, axis=0) if out else np.zeros((0, self.embedding_dim), np.float32)
 
@@ -153,17 +154,12 @@ def _download(filename: str) -> str:
     return hf_hub_download(FTP1_REPO_ID, filename)
 
 
-def preprocess(images_bgr: np.ndarray) -> torch.Tensor:
-    """``(N, H, W, 3)`` uint8 BGR -> ``(N, 3, 224, 224)`` float32 in [-1, 1], as FTP-1 feeds its tokenizer."""
-    images_bgr = np.asarray(images_bgr)
-    if images_bgr.ndim != 4 or images_bgr.shape[-1] != 3:
-        raise ValueError(f"expected (N, H, W, 3) images, got {images_bgr.shape}")
-    if images_bgr.shape[1:3] != (IMAGE_SIZE, IMAGE_SIZE):
-        images_bgr = np.stack([cv2.resize(img, (IMAGE_SIZE, IMAGE_SIZE)) for img in images_bgr])
-    x = torch.from_numpy(np.ascontiguousarray(images_bgr)).float() / 255.0 * 2.0 - 1.0
+def preprocess(images: np.ndarray) -> torch.Tensor:
+    """``(N, H, W, 3)`` uint8 -> ``(N, 3, 224, 224)`` float32 in [-1, 1], as FTP-1 feeds its tokenizer."""
+    images = np.asarray(images)
+    if images.ndim != 4 or images.shape[-1] != 3:
+        raise ValueError(f"expected (N, H, W, 3) images, got {images.shape}")
+    if images.shape[1:3] != (IMAGE_SIZE, IMAGE_SIZE):
+        images = np.stack([cv2.resize(img, (IMAGE_SIZE, IMAGE_SIZE)) for img in images])
+    x = torch.from_numpy(np.ascontiguousarray(images)).float() / 255.0 * 2.0 - 1.0
     return x.permute(0, 3, 1, 2).contiguous()
-
-
-def rgb_to_bgr(images: np.ndarray) -> np.ndarray:
-    """Swap the channel order of ``(..., 3)`` images; RGB frames from the simulator become FTP-1's BGR."""
-    return np.ascontiguousarray(np.asarray(images)[..., ::-1])

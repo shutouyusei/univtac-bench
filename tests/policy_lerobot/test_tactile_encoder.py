@@ -22,15 +22,6 @@ def test_preprocess_rejects_non_image_input():
         te.preprocess(np.zeros((224, 224, 3), np.uint8))
 
 
-def test_rgb_to_bgr_swaps_channels():
-    rgb = np.zeros((1, 2, 2, 3), np.uint8)
-    rgb[..., 0] = 10
-    rgb[..., 2] = 30
-    bgr = te.rgb_to_bgr(rgb)
-    assert bgr[..., 0].max() == 30 and bgr[..., 2].max() == 10
-    assert bgr.flags["C_CONTIGUOUS"]
-
-
 @pytest.mark.parametrize("embedding,dim", [("cls", 768), ("proj", 512)])
 def test_forward_shape_per_embedding(embedding, dim):
     enc = te.FTP1GelSightEncoder(embedding).eval()

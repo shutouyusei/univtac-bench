@@ -1,5 +1,6 @@
 """Bridge encoding: wire round trip, observation trimming on the Isaac side, batch building and app routes on the lerobot side."""
 
+import cv2
 import numpy as np
 import pytest
 import torch
@@ -79,9 +80,9 @@ def test_build_batch_matches_dataset_contract():
     obs = obs_mod.select_observation(sim_observation(), ("head",))
     seen = {}
 
-    def fake_embed(images_bgr):
-        seen["images"] = images_bgr
-        return np.full((len(images_bgr), 4), 0.5, np.float32)
+    def fake_embed(images):
+        seen["images"] = images
+        return np.full((len(images), 4), 0.5, np.float32)
 
     batch = build_batch(obs, fake_embed, "Insert the tube.", image_size=256)
     assert set(batch) == {"observation.images.head", "observation.state", "observation.environment_state", "task"}
@@ -90,9 +91,13 @@ def test_build_batch_matches_dataset_contract():
     assert batch["observation.state"].shape == (8,)
     assert batch["observation.environment_state"].shape == (8,)
     assert batch["task"] == "Insert the tube."
-    # encoder sees left then right, in BGR
+    # encoder sees left then right, exactly as the simulator hands them (same as the converter)
     assert seen["images"].shape == (2, 240, 320, 3)
-    np.testing.assert_array_equal(seen["images"][0][..., 0], obs["tactile"]["left"][..., 2])
+    np.testing.assert_array_equal(seen["images"][0], obs["tactile"]["left"])
+    np.testing.assert_array_equal(seen["images"][1], obs["tactile"]["right"])
+    # and the camera frame is the simulator's frame, resized, in the same channel order
+    head = cv2.resize(obs["images"]["head"], (256, 256), interpolation=cv2.INTER_LINEAR)
+    np.testing.assert_array_equal((img * 255).round().numpy().transpose(1, 2, 0), head)
 
 
 def test_server_routes_take_json_bodies():

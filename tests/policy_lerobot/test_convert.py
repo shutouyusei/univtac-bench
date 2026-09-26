@@ -42,15 +42,15 @@ def test_split_transitions_pairs_next_joint_as_action():
         transforms.split_transitions(joint[:1])
 
 
-def test_decode_frames_roundtrips_png_in_bgr():
+def test_decode_frames_returns_the_encoded_array_unchanged():
+    """UniVTAC writes the simulator's RGB array through cv2.imencode; imdecode gives that array back."""
     img = np.zeros((8, 6, 3), np.uint8)
-    img[..., 0] = 200  # blue in BGR
+    img[..., 0] = 200
     ok, buf = cv2.imencode(".png", img)
     assert ok
     frames = hdf5.decode_frames(np.array([buf.tobytes(), buf.tobytes()], dtype=object))
     assert frames.shape == (2, 8, 6, 3)
     np.testing.assert_array_equal(frames[0], img)
-    assert transforms.bgr_to_rgb(frames)[0, 0, 0, 2] == 200
 
 
 def test_resize_frames_to_square():
@@ -96,9 +96,11 @@ def test_encode_episode_builds_dataset_rows_with_and_without_tactile_images():
     ep = _episode()
     calls = []
 
-    def fake_embed(frames_bgr):
-        calls.append(frames_bgr.shape)
-        return np.full((len(frames_bgr), 3), 0.5, np.float32)
+    seen = []
+
+    def fake_embed(frames):
+        seen.append(frames)
+        return np.full((len(frames), 3), 0.5, np.float32)
 
     frames = pipeline.encode_episode(ep, ("head",), fake_embed, image_size=64, tactile_images=False)
     assert len(frames) == 3
@@ -106,7 +108,12 @@ def test_encode_episode_builds_dataset_rows_with_and_without_tactile_images():
     assert frames.env_state.shape == (3, 6)
     assert list(frames.images) == ["observation.images.head"]
     assert frames.images["observation.images.head"].shape == (3, 64, 64, 3)
-    assert calls == [(3, 240, 320, 3), (3, 240, 320, 3)]  # left then right, last frame dropped
+    # frames keep the channel order they were decoded in: camera resized only, fingertips untouched
+    np.testing.assert_array_equal(
+        frames.images["observation.images.head"][0], cv2.resize(ep["cameras"]["head"][0], (64, 64), interpolation=cv2.INTER_LINEAR)
+    )
+    np.testing.assert_array_equal(seen[0], ep["tactile"]["left"][:3])  # left then right, last frame dropped
+    np.testing.assert_array_equal(seen[1], ep["tactile"]["right"][:3])
 
     with_tac = pipeline.encode_episode(ep, ("head",), fake_embed, image_size=64, tactile_images=True)
     assert set(with_tac.images) == {
@@ -114,7 +121,7 @@ def test_encode_episode_builds_dataset_rows_with_and_without_tactile_images():
         "observation.images.tactile_left",
         "observation.images.tactile_right",
     }
-    assert with_tac.images["observation.images.tactile_left"].shape == (3, 240, 320, 3)
+    np.testing.assert_array_equal(with_tac.images["observation.images.tactile_left"], ep["tactile"]["left"][:3])
     assert pipeline.image_shapes_for(ep, ("head",), 64, True)["observation.images.tactile_left"] == (240, 320)
 
 
