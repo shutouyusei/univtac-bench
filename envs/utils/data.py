@@ -217,7 +217,8 @@ class HDF5Handler:
                     encode_data, max_len = self.img_to_stream(v)
                     node.create_dataset(k, data=encode_data, dtype=f"S{max_len}")
                 elif len(v) > 0 and isinstance(v[0], str):
-                    max_len = np.max([len(s) for s in v])
+                    # h5py rejects the zero-width 'S0' an all-empty column would ask for.
+                    max_len = max(1, int(np.max([len(s) for s in v])))
                     node.create_dataset(k, data=v, dtype=f'S{max_len}')
                 else:
                     v = np.array(v)
