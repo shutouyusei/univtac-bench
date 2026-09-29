@@ -12,12 +12,14 @@ import numpy as np
 from tqdm import tqdm
 
 from ..tactile import FTP1GelSightEncoder
+from .aux_targets import AUX_ACTION_NAMES, VirtualTargetParams, augment_actions
 from .hdf5 import read_episode, select_episode_files
 from .schema import (
     ACTION_KEY,
     CAMERA_KEYS,
     DATA_ROOT,
     ENV_STATE_KEY,
+    STATE_DIM,
     STATE_KEY,
     TACTILE_CAMERAS,
     TACTILE_IMAGE_KEYS,
@@ -39,6 +41,12 @@ class ConvertOptions:
     tactile_images: bool = False
     use_videos: bool = False
     overwrite: bool = True
+    # VRR: append [virtual target 3, stiffness 1] to every action; None keeps the joint action.
+    virtual_target: VirtualTargetParams | None = None
+
+    @property
+    def aux_action_names(self) -> list[str]:
+        return list(AUX_ACTION_NAMES) if self.virtual_target is not None else []
 
 
 @dataclass(frozen=True)
@@ -46,7 +54,7 @@ class EpisodeFrames:
     """Everything of one episode in dataset layout, one row per transition."""
 
     state: np.ndarray  # (N, 8)
-    action: np.ndarray  # (N, 8)
+    action: np.ndarray  # (N, 8), or (N, 12) with the auxiliary targets behind the joints
     env_state: np.ndarray  # (N, tactile_channels)
     images: dict[str, np.ndarray]  # key -> (N, H, W, 3) RGB uint8
 
@@ -74,14 +82,27 @@ def image_shapes_for(episode: dict, cameras: tuple[str, ...], image_size: int, t
 
 
 def encode_episode(
-    episode: dict, cameras: tuple[str, ...], embed: Embed, image_size: int, tactile_images: bool
+    episode: dict,
+    cameras: tuple[str, ...],
+    embed: Embed,
+    image_size: int,
+    tactile_images: bool,
+    virtual_target: VirtualTargetParams | None = None,
 ) -> EpisodeFrames:
     """Pair frames into transitions, resize the cameras, embed both fingertips.
 
     Frames keep the channel order they decode to, which is the simulator's RGB:
     the same order the inference server sees live and FTP-1 was trained on.
+    With ``virtual_target`` every action is followed by its frame's VRR targets.
     """
     state, action = split_transitions(episode["joint"])
+    if virtual_target is not None:
+        if episode.get("force") is None:
+            raise ValueError(
+                "the episode has no recorded contact force; fill it in with "
+                "scripts/replay.py --record-dir under a config that observes 'force'"
+            )
+        action = augment_actions(action, episode["ee_pos"], episode["force"], virtual_target)
     n = len(state)
     images = {CAMERA_KEYS[cam]: resize_frames(episode["cameras"][cam][:n], image_size) for cam in cameras}
     if tactile_images:
@@ -131,7 +152,12 @@ def conversion_metadata(
         "tactile_embedding": options.embedding,
         "tactile_channels": tactile_channels,
         "state": "joint[:8]",
-        "action": "joint[1:, :8]",
+        "action": "joint[1:, :8]" + (" + [virtual target 3, stiffness 1]" if options.virtual_target else ""),
+        "action_dim": STATE_DIM + len(options.aux_action_names),
+        "executed_action_dim": STATE_DIM,
+        "aux_target": (
+            {"type": "virtual_target", **options.virtual_target.to_dict()} if options.virtual_target else None
+        ),
         "num_episodes": len(files),
         "num_frames": int(sum(lengths)),
         "episodes": {i: {"source": str(p), "length": int(n)} for i, (p, n) in enumerate(zip(files, lengths))},
@@ -155,6 +181,7 @@ def convert(
         image_shapes_for(first, cameras, options.image_size, options.tactile_images),
         tactile_channels,
         options.use_videos,
+        aux_action_names=options.aux_action_names,
     )
     dataset = LeRobotDataset.create(
         repo_id=repo_id, fps=options.fps, features=features, root=out_root, robot_type="vitac_arm",
@@ -164,7 +191,9 @@ def convert(
     lengths = []
     for idx, path in enumerate(tqdm(files, desc="episodes")):
         episode = first if idx == 0 else read_episode(path, cameras)
-        frames = encode_episode(episode, cameras, encoder.embed, options.image_size, options.tactile_images)
+        frames = encode_episode(
+            episode, cameras, encoder.embed, options.image_size, options.tactile_images, options.virtual_target
+        )
         write_episode(dataset, frames, instruction)
         lengths.append(len(frames))
     dataset.finalize()

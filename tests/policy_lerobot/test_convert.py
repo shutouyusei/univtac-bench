@@ -151,3 +151,98 @@ def test_prepare_output_dir_respects_overwrite(tmp_path):
     with pytest.raises(FileExistsError):
         pipeline.prepare_output_dir(out, overwrite=False)
     assert not (pipeline.prepare_output_dir(out, overwrite=True)).exists()
+
+
+# --- VRR auxiliary targets in the action ------------------------------------------------
+
+
+def _contact_file(tmp_path, with_force=True, T=4):
+    import h5py
+
+    path = tmp_path / "0.hdf5"
+    with h5py.File(path, "w") as f:
+        ee = np.zeros((T, 7), np.float32)
+        ee[:, 0] = np.arange(T)
+        f.create_dataset("embodiment/ee", data=ee)
+        if with_force:
+            f.create_dataset("tactile/left_tactile/force", data=np.full((T, 3), 1.0, np.float32))
+            f.create_dataset("tactile/right_tactile/force", data=np.full((T, 3), 2.0, np.float32))
+    return path
+
+
+def test_read_contact_sums_the_fingertip_forces(tmp_path):
+    import h5py
+
+    with h5py.File(_contact_file(tmp_path), "r") as f:
+        contact = hdf5.read_contact(f)
+    np.testing.assert_array_equal(contact["ee_pos"], [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]])
+    np.testing.assert_array_equal(contact["force"], np.full((4, 3), 3.0))
+
+
+def test_read_contact_without_recorded_force_has_none(tmp_path):
+    import h5py
+
+    with h5py.File(_contact_file(tmp_path, with_force=False), "r") as f:
+        contact = hdf5.read_contact(f)
+    assert contact["force"] is None
+    assert contact["ee_pos"].shape == (4, 3)
+
+
+def _contact_episode(T=4):
+    from policy.lerobot.convert.aux_targets import VirtualTargetParams
+
+    ep = _episode(T)
+    ep["ee_pos"] = np.stack([np.arange(T), np.zeros(T), np.zeros(T)], axis=1).astype(np.float64)
+    ep["force"] = np.zeros((T, 3))
+    ep["force"][1] = [0.0, 0.0, 10.0]
+    return ep, VirtualTargetParams()
+
+
+def _embed(frames):
+    return np.zeros((len(frames), 2), np.float32)
+
+
+def test_encode_episode_appends_the_auxiliary_targets_to_the_action():
+    ep, params = _contact_episode()
+    frames = pipeline.encode_episode(ep, ("head",), _embed, 32, False, virtual_target=params)
+    plain = pipeline.encode_episode(ep, ("head",), _embed, 32, False)
+    assert plain.action.shape == (3, 8)
+    assert frames.action.shape == (3, 12)
+    np.testing.assert_array_equal(frames.action[:, :8], plain.action)
+    np.testing.assert_array_equal(frames.state, plain.state)
+    # action 0 belongs to frame 1, the frame with 10 N: k = 200, x_vt = ee - 10 / 200 along z
+    np.testing.assert_allclose(frames.action[0, 8:], [1.0, 0.0, -0.05, 200.0], atol=1e-6)
+    np.testing.assert_allclose(frames.action[1, 8:], [2.0, 0.0, 0.0, 10000.0], atol=1e-6)
+
+
+def test_encode_episode_refuses_auxiliary_targets_without_recorded_force():
+    ep, params = _contact_episode()
+    ep["force"] = None
+    with pytest.raises(ValueError, match="force"):
+        pipeline.encode_episode(ep, ("head",), _embed, 32, False, virtual_target=params)
+
+
+def test_build_features_names_the_auxiliary_action_dims():
+    from policy.lerobot.convert.aux_targets import AUX_ACTION_NAMES
+
+    feats = schema.build_features({}, 4, use_videos=False, aux_action_names=AUX_ACTION_NAMES)
+    assert feats["action"]["shape"] == (12,)
+    assert feats["action"]["names"] == [f"joint_{i}" for i in range(8)] + AUX_ACTION_NAMES
+    assert feats["observation.state"]["shape"] == (8,)
+
+
+def test_conversion_metadata_records_what_is_executed_and_how_the_targets_were_built(tmp_path):
+    from policy.lerobot.convert.aux_targets import VirtualTargetParams
+
+    common = dict(
+        task_name="insert_hole", task_config="clean51_force", repo_id="local/x", dataset_root=tmp_path,
+        cameras=("head",), tactile_channels=4, instruction="Insert.", files=[tmp_path / "0.hdf5"], lengths=[3],
+    )
+    plain = pipeline.conversion_metadata(options=pipeline.ConvertOptions(), **common)
+    assert plain["action_dim"] == 8 and plain["executed_action_dim"] == 8 and plain["aux_target"] is None
+
+    params = VirtualTargetParams(force_scale=1700.0)
+    vrr = pipeline.conversion_metadata(options=pipeline.ConvertOptions(virtual_target=params), **common)
+    assert vrr["action_dim"] == 12 and vrr["executed_action_dim"] == 8
+    assert vrr["aux_target"] == {"type": "virtual_target", **params.to_dict()}
+    json.dumps(vrr)
