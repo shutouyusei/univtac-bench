@@ -58,6 +58,41 @@ python scripts/replay.py lift_bottle clean --headless \
                      env_settings.frequencies.video=30
 ```
 
+### Contact force and torque
+
+`observation_settings.tactile` accepts two opt-in entries, `force` and
+`torque`: the net contact force on each gel pad and its torque about the gel's
+`pose` origin, both in the simulation world frame, read from libuipc's contact
+gradients of the last solve (`VisualTactileSensor.get_contact_wrench`). The
+left and right squeeze cancel in the sum over both pads, so that sum is the
+external contact wrench on the grasped object. `task_config/clean51_force.yml`
+is `clean51` with both enabled.
+
+### Filling missing observations into a collected dataset
+
+`scripts/replay.py --record-dir` replays a dataset's joint trajectories under
+the active config and adds the observation types the episodes lack, for
+example `force`/`torque` for episodes collected without them:
+
+```bash
+python scripts/replay.py insert_hole clean51_force --headless \
+  --data-root data/insert_hole/clean51 \
+  --record-dir data/insert_hole/clean51_force
+```
+
+Each output episode `hdf5/<seed>.hdf5` is the source file plus the added
+datasets. Nothing of the source is replaced: joints, end-effector pose, images
+and tactile frames are the collected ones, so the filled dataset gives a policy
+the same inputs and actions as the source. The added datasets have one row per
+source frame; a replay with another frame count is rejected. The source
+dataset itself is never written to.
+
+The added values are measured on the replayed trajectory, which follows the
+recorded one only up to the controller's tracking error. Each `metadata.json`
+entry copies the source episode's entry and adds `replayed_from`,
+`replay_result`, `added_observations` and the tracking errors of the joints and
+actors (`replay_tracking`), so episodes whose replay drifted can be excluded.
+
 ## Data Structure
 
 After data collection is completed, the collected data will be stored under `data/${task_name}/${config_name}/`:
@@ -99,6 +134,8 @@ Below is the structure of the saved observation data for each episode (stored in
             "press_depth": "np.ndarray(240, 320), positive indentation in mm",
             "marker": "np.ndarray(2, 63, 2)",
             "pose": "np.ndarray(7,)",
+            "force": "np.ndarray(3,), net contact force on the gel, world frame (opt-in)",
+            "torque": "np.ndarray(3,), contact torque about the gel pose origin, world frame (opt-in)",
             "rgb": "np.ndarray(240, 320, 3)",
             "rgb_marker": "np.ndarray(240, 320, 3)"
         },
@@ -107,6 +144,8 @@ Below is the structure of the saved observation data for each episode (stored in
             "press_depth": "np.ndarray(240, 320), positive indentation in mm",
             "marker": "np.ndarray(2, 63, 2)",
             "pose": "np.ndarray(7,)",
+            "force": "np.ndarray(3,) (opt-in)",
+            "torque": "np.ndarray(3,) (opt-in)",
             "rgb": "np.ndarray(240, 320, 3)",
             "rgb_marker": "np.ndarray(240, 320, 3)"
         }

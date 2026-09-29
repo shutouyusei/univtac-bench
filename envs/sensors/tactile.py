@@ -23,6 +23,11 @@ from tacex_uipc import (
     UipcDeformableObjectCfg,
 )
 
+from uipc import builtin, view
+from uipc.core import ContactSystemFeature
+from uipc.geometry import Geometry
+
+from .contact_force import accumulate_vertex_forces, gel_vertex_forces, wrench_about
 from ..utils.transforms import *
 
 if TYPE_CHECKING:
@@ -306,6 +311,7 @@ class VisualTactileSensor:
         self.attachment.isaaclab_rigid_object = self.robot
         self.sensor = GelSightSensor(self.cfg.sensor_cfg, self.gelpad)
         # self.scene.sensors[f'tactile_{self.cfg.name}'] = self.sensor
+        self._contact_feature = None
     
     def setup(self):
         self.device = self.uipc_sim.cfg.device
@@ -342,6 +348,42 @@ class VisualTactileSensor:
         trans_to_init = self.attach_to_init @ trans_to_attach
         return self.gelpad.data.nodal_pos_w @ trans_to_init[:3, :3].T + trans_to_init[:3, 3]
  
+    def _gel_geometry(self):
+        geo_slot, _rest = self.uipc_sim.scene.geometries().find(self.gelpad.obj_id)
+        return geo_slot.geometry()
+
+    def get_contact_wrench(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Net contact force and torque on this gel pad in the simulation world frame.
+
+        libuipc's ContactSystemFeature reports the contact-energy gradient of the last
+        solve per touched vertex (global index) and contact primitive type; the force
+        on a vertex is minus that gradient. The torque is taken about the gel's
+        attachment origin (the ``pose`` observation), so force and torque together are
+        the wrench a sensor at the fingertip would read.
+        """
+        if self._contact_feature is None:
+            feature = self.uipc_sim.world.features().find(ContactSystemFeature)
+            self._contact_feature = (feature, feature.contact_primitive_types(), Geometry())
+        feature, prim_types, grad_geo = self._contact_feature
+        geo = self._gel_geometry()
+        offset = int(view(geo.meta().find(builtin.global_vertex_offset))[0])
+        n_verts = geo.vertices().size()
+        contributions = []
+        for prim_type in prim_types:
+            feature.contact_gradient(prim_type, grad_geo)
+            ids = grad_geo.instances().find("i")
+            grads = grad_geo.instances().find("grad")
+            if ids is None or grads is None:
+                continue
+            contributions.append(gel_vertex_forces(view(ids), view(grads), offset, n_verts))
+        per_vertex = accumulate_vertex_forces(n_verts, contributions)
+        positions = np.asarray(geo.positions().view()).reshape(-1, 3)
+        force, torque = wrench_about(self.get_attach_pose().p, positions, per_vertex)
+        return (
+            torch.tensor(force, dtype=torch.float32),
+            torch.tensor(torque, dtype=torch.float32),
+        )
+
     def update(self, dt, force_recompute=False):
         self.gelpad.update(dt=dt)
         self.sensor.update(dt=dt, force_recompute=force_recompute)
@@ -379,6 +421,13 @@ class VisualTactileSensor:
                 obs['points'] = self.get_init_pts()
             elif data_type == 'pose':
                 obs['pose'] = self.get_attach_pose().totensor()
+            elif data_type in ('force', 'torque'):
+                if 'force' not in obs and 'torque' not in obs:
+                    force, torque = self.get_contact_wrench()
+                    if 'force' in data_types:
+                        obs['force'] = force
+                    if 'torque' in data_types:
+                        obs['torque'] = torque
         return obs
     
     def _reset_idx(self):

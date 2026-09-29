@@ -21,6 +21,15 @@ from envs.utils.env_parser import (
     create_task_env,
     load_task_config,
 )
+from envs.utils.replay_record import (
+    episode_output_paths,
+    hdf5_dataset_paths,
+    merge_missing_observations,
+    missing_observations,
+    redirect_episode_output,
+    source_metadata_entry,
+    write_metadata_entry,
+)
 
 from isaaclab.app import AppLauncher
 # add argparse arguments
@@ -56,6 +65,26 @@ parser.add_argument(
     help=(
         "Replay only the listed dataset seeds, preserving dataset order. "
         "For example: --seeds 0 2 3."
+    ),
+)
+parser.add_argument(
+    "--data-root",
+    type=str,
+    default=None,
+    help=(
+        "Directory holding the HDF5 episodes to replay. Defaults to the collection "
+        "directory of the given task config; pass it to replay one config's data "
+        "under another config, e.g. clean51 data with clean51_force observations."
+    ),
+)
+parser.add_argument(
+    "--record-dir",
+    type=str,
+    default=None,
+    help=(
+        "Fill in the observations the replayed episodes lack: write "
+        "<record-dir>/hdf5/<seed>.hdf5 = the source episode plus the active config's "
+        "observation types it does not have (+ metadata.json). Source data is kept as is."
     ),
 )
 add_config_override_argument(parser)
@@ -101,9 +130,15 @@ def replay(
     action_stride: int,
     replay_force: bool,
     post_replay_delay_steps: int,
+    record_dir: Path | None = None,
 ):
     eval_start = time.perf_counter()
     task.reset(seed=seed)
+    source_paths = set()
+    added_observations = []
+    if record_dir is not None:
+        redirect_episode_output(task, record_dir, seed)
+        source_paths = hdf5_dataset_paths(data_path)
 
     succ = False
     # Replay only needs the robot state. Loading every observation would decode all
@@ -164,6 +199,14 @@ def replay(
             stop_on_success=False,
         )
         observation = task._get_observations()
+        if record_dir is not None:
+            missing = missing_observations(observation, source_paths)
+            if not missing:
+                raise ValueError(
+                    f"{data_path} already holds every observation type of the active config; "
+                    "nothing to record."
+                )
+            task.save_observations(missing)
         target_qpos = recorded_qpos_list[idx]
         real_qpos = observation['embodiment']['joint'][:9]
         qpos_error = real_qpos - target_qpos
@@ -216,6 +259,12 @@ def replay(
             'result_ee': observation['embodiment']['ee'][:3].cpu().tolist(),
         })
     replay_end_physics_step = task._physics_step_count
+    if record_dir is not None:
+        # One row per source frame; the settling frames below are not part of the episode.
+        task.save_to_hdf5()
+        merged_path = episode_output_paths(record_dir, seed)[2]
+        added_observations = merge_missing_observations(data_path, task.save_path, merged_path)
+        task.save_path.unlink()
 
     # ``take_action`` stops advancing physics after ``step_lim`` is reached, so
     # the old post-replay take_action loop did not actually let released objects
@@ -350,6 +399,16 @@ def replay(
 
     eval_cost = time.perf_counter() - eval_start
     succ_status = 'success' if succ else 'failed'
+    if record_dir is not None:
+        entry = source_metadata_entry(data_path, seed)
+        entry['replayed_from'] = str(data_path.resolve())
+        entry['replay_result'] = succ_status
+        entry['added_observations'] = added_observations
+        entry['replay_tracking'] = {
+            'qpos': summary['overall'],
+            'actor': summary['actor_tracking'],
+        }
+        write_metadata_entry(record_dir, seed, entry)
     task.clean_cache(result=succ_status)
     return succ_status, eval_cost
 
@@ -359,6 +418,7 @@ def replay_seeds(
     action_stride: int,
     replay_force: bool,
     post_replay_delay_steps: int,
+    record_dir: Path | None = None,
 ):
     test_num, succ_num = 0, 0
     for seed, data_path in data:
@@ -370,6 +430,7 @@ def replay_seeds(
             action_stride,
             replay_force,
             post_replay_delay_steps,
+            record_dir,
         )
         succ_num += 1 if result == 'success' else 0
         log(f"[{test_num:<3d}] Seed {seed} {result} after {eval_cost:.2f} s.\n"
@@ -409,11 +470,15 @@ def main():
 
     # The dataset configuration name is intentionally fixed to the active task
     # config file stem.  There is no CLI/data_config override path.
-    data_root = collection_data_dir(
-        task_config,
-        task_file_name,
-        task_config_file.stem,
-    ).resolve()
+    if args_cli.data_root is not None:
+        data_root = Path(args_cli.data_root).resolve()
+    else:
+        data_root = collection_data_dir(
+            task_config,
+            task_file_name,
+            task_config_file.stem,
+        ).resolve()
+    record_dir = Path(args_cli.record_dir).resolve() if args_cli.record_dir else None
     if (data_root / 'hdf5').exists():
         print(f"Found hdf5 data in {data_root / 'hdf5'}, start replaying.")
         # self collect data
@@ -467,7 +532,8 @@ def main():
         f"Start replaying {len(data)} seeds from {data_root} with "
         f"action_stride={action_stride}, decimation={env_cfg.decimation}, "
         f"force={replay_force}, post_replay_delay_steps="
-        f"{post_replay_delay_steps}."
+        f"{post_replay_delay_steps}"
+        + (f", recording to {record_dir}." if record_dir is not None else ".")
     )
 
     results = replay_seeds(
@@ -476,6 +542,7 @@ def main():
         action_stride=action_stride,
         replay_force=replay_force,
         post_replay_delay_steps=post_replay_delay_steps,
+        record_dir=record_dir,
     )
     log(f"Final Result: {results['succ_num']}/{results['test_num']}({results['succ_num']/results['test_num']*100:.2f}%) success.")
     
