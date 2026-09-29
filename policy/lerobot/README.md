@@ -70,10 +70,10 @@ after unnormalising, so the server still returns 8 joints.
 # 1. episodes with the fingertip contact force (docs/Collection.md, "Filling missing observations")
 python scripts/replay.py insert_hole clean51_force --headless \
   --data-root data/insert_hole/clean51 --record-dir data/insert_hole/clean51_force
-# 2. the force unit: prints two candidate scales and what each does to the target
+# 2. look at the force and at what the targets make of it, before training
 $LR policy/lerobot/force_stats.py insert_hole clean51_force --json policy/lerobot/data/force_stats.json
-# 3. convert with the chosen scale -> policy/lerobot/data/local/insert_hole-clean51_force-100-vt
-$LR policy/lerobot/process_data.py insert_hole clean51_force 100 --aux-target virtual_target --force-scale <scale>
+# 3. convert -> policy/lerobot/data/local/insert_hole-clean51_force-100-vt
+$LR policy/lerobot/process_data.py insert_hole clean51_force 100 --aux-target virtual_target
 # 4. train; train.sh reads executed_action_dim from source_metadata.json
 bash policy/lerobot/train.sh tacforcing policy/lerobot/data/local/insert_hole-clean51_force-100-vt 60000
 ```
@@ -81,11 +81,12 @@ bash policy/lerobot/train.sh tacforcing policy/lerobot/data/local/insert_hole-cl
 The target is `x_vt = x_ee - f / k(|f|)` with `f` the force summed over both
 fingertips (the grip squeezes cancel) and `k` falling linearly from 10000 N/m
 below 0.5 N to 200 N/m above 5 N: about 0.05 mm of offset at 0.5 N, 25 mm at
-5 N. The simulator's force is not in newtons and the schedule is that steep, so
-the force scale decides whether contact moves the target at all. It is fixed
-from the dataset before training and recorded in `source_metadata.json`
-(`aux_target`). Every other observation, the state and the first 8 action dims
-are those of the plain conversion of the same episodes.
+5 N. The constants are ImplicitRDP's and apply to the recorded force in
+newtons; they are written to `source_metadata.json` (`aux_target`). The
+schedule is steep and the simulator's contacts are strong (tens of newtons on
+the slot rim), so `force_stats.py` reports how many frames saturate and how far
+the target moves. Every other observation, the state and the first 8 action
+dims are those of the plain conversion of the same episodes.
 
 ## When the server fails
 

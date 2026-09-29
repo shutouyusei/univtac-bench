@@ -51,8 +51,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     defaults = VirtualTargetParams()
     p.add_argument("--aux-target", choices=("none", "virtual_target"), default="none",
                    help="virtual_target appends VRR's [virtual target 3, stiffness 1] to every action")
-    p.add_argument("--force-scale", type=float, default=None,
-                   help="newtons per unit of the recorded force (policy/lerobot/force_stats.py prints it)")
+    p.add_argument("--force-scale", type=float, default=defaults.force_scale,
+                   help="newtons per unit of the recorded force; 1 for episodes recorded in newtons")
     p.add_argument("--f-min", type=float, default=defaults.f_min, help="N")
     p.add_argument("--f-max", type=float, default=defaults.f_max, help="N")
     p.add_argument("--k-min", type=float, default=defaults.k_min, help="N/m")
@@ -63,11 +63,6 @@ def parse_args(argv=None) -> argparse.Namespace:
 def virtual_target_params(args: argparse.Namespace) -> VirtualTargetParams | None:
     if args.aux_target == "none":
         return None
-    if args.force_scale is None:
-        raise SystemExit(
-            "--aux-target virtual_target needs --force-scale: the recorded force is not in newtons. "
-            "Run policy/lerobot/force_stats.py on the dataset first."
-        )
     return VirtualTargetParams(
         force_scale=args.force_scale, f_min=args.f_min, f_max=args.f_max, k_min=args.k_min, k_max=args.k_max
     )

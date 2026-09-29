@@ -13,9 +13,9 @@ in free motion the target stays on the end effector, in contact it moves away
 from it by centimetres. Sign and frame follow ImplicitRDP's released code
 (``post_process_data.py``), which subtracts the offset in the robot base frame.
 
-The constants default to the paper's. The simulator's force is not in newtons,
-so ``force_scale`` converts it first; it is the one quantity chosen from the
-dataset (``force_stats``).
+The constants default to the paper's and apply to a force in newtons, which is
+what the ``force`` observation records. ``force_scale`` (newtons per recorded
+unit, default 1) exists for episodes recorded in another unit.
 """
 
 from __future__ import annotations

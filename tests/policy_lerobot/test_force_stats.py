@@ -68,40 +68,31 @@ def test_sparse_bins_do_not_decide():
     assert threshold == pytest.approx(1e-2)
 
 
-def test_summarize_maps_the_stable_magnitude_to_the_papers_f_min():
+def test_summarize_reports_the_distribution_and_the_stable_magnitude():
     from policy.lerobot.convert.force_stats import summarize
 
     rng = np.random.default_rng(1)
     up = np.array([0.0, 0.0, 1.0])
     episodes = []
     for _ in range(4):
-        noisy = rng.normal(size=(200, 3)) * 1e-3  # random direction, small
-        stable = up * rng.uniform(2e-2, 8e-2, size=(200, 1)) + rng.normal(size=(200, 3)) * 1e-3
+        noisy = rng.normal(size=(200, 3)) * 0.1  # random direction, small
+        stable = up * rng.uniform(2.0, 8.0, size=(200, 1)) + rng.normal(size=(200, 3)) * 0.1
         episodes.append(np.concatenate([noisy, stable]))
-    report = summarize(episodes, per_decade=2, max_median_deg=10.0, min_count=20, paper_f_min=0.5)
+    report = summarize(episodes, per_decade=2, max_median_deg=10.0, min_count=20)
     assert report["frames"] == 1600 and report["episodes"] == 4
-    assert 3e-3 <= report["stable_force_threshold"] <= 3e-2
-    assert report["force_scale"] == pytest.approx(0.5 / report["stable_force_threshold"])
+    assert 0.3 <= report["stable_force_threshold"] <= 3.0
     assert set(report["force_percentiles"]) == {"p50", "p90", "p99", "max"}
     assert report["table"][0]["low"] < report["table"][-1]["low"]
+    assert "force_scale" not in report
 
 
-def test_summarize_also_proposes_the_scale_that_matches_a_reference_p90():
-    from policy.lerobot.convert.force_stats import summarize
-
-    forces = [np.tile([0.0, 0.0, 1.0], (100, 1)) * np.linspace(0.0, 0.01, 100)[:, None]]
-    report = summarize(forces, per_decade=2, max_median_deg=10.0, min_count=5, paper_f_min=0.5, reference_p90=12.0)
-    assert report["force_scale_p90"] == pytest.approx(12.0 / report["force_percentiles"]["p90"])
-    assert summarize(forces, 2, 10.0, 5, 0.5)["force_scale_p90"] is None
-
-
-def test_regime_shares_and_offsets_describe_what_a_scale_does():
+def test_describe_targets_gives_regime_shares_and_offsets():
     from policy.lerobot.convert.aux_targets import VirtualTargetParams
-    from policy.lerobot.convert.force_stats import describe_scale
+    from policy.lerobot.convert.force_stats import describe_targets
 
-    force = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.001], [0.0, 0.0, 0.01]])  # x1000: 0, 1, 10 N
+    force = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 10.0]])  # N
     ee = np.zeros((3, 3))
-    out = describe_scale([force], [ee], VirtualTargetParams(force_scale=1000.0))
+    out = describe_targets([force], [ee], VirtualTargetParams())
     assert out["share_below_f_min"] == pytest.approx(1 / 3)
     assert out["share_between"] == pytest.approx(1 / 3)
     assert out["share_above_f_max"] == pytest.approx(1 / 3)
@@ -113,5 +104,5 @@ def test_direction_changes_never_pair_frames_of_different_episodes():
 
     a = np.tile([0.0, 0.0, 0.05], (50, 1))
     b = np.tile([0.05, 0.0, 0.0], (50, 1))  # 90 deg away from a, but a different episode
-    report = summarize([a, b], per_decade=2, max_median_deg=10.0, min_count=20, paper_f_min=0.5)
+    report = summarize([a, b], per_decade=2, max_median_deg=10.0, min_count=20)
     assert all(row["p90_deg"] < 1.0 for row in report["table"])

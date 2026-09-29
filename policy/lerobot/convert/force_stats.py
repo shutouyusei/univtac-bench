@@ -1,17 +1,16 @@
-"""Where the recorded contact force becomes a reliable direction.
+"""What the recorded contact force looks like, and what VRR's targets make of it.
 
-VRR's stiffness schedule comes from Adaptive Compliance Policy (arXiv 2410.09309),
-which lowers the stiffness with the force magnitude because "the low stiffness
-direction is estimated from noisy force signal": below ``f_min`` the direction is
-not trusted. That makes ``f_min`` measurable: it is the magnitude from which the
-force keeps its direction from one frame to the next. The simulator's force unit
-is then fixed by mapping that magnitude to the paper's ``f_min`` in newtons.
+Two views of a dataset's summed fingertip force [N]:
 
-A second, independent proposal maps the dataset's 90th percentile of the force
-magnitude to a reference value in newtons (ImplicitRDP's released episodes have
-about 12 N there). The two need not agree: the schedule is steep, the virtual
-target leaves the end effector by 0.05 mm at ``f_min`` and by 25 mm at ``f_max``,
-so ``describe_scale`` reports what a scale does before one is chosen.
+* how much its direction changes from one frame to the next, per magnitude bin.
+  The stiffness schedule VRR borrows from Adaptive Compliance Policy (arXiv
+  2410.09309) exists because "the low stiffness direction is estimated from noisy
+  force signal": below ``f_min`` the direction is not trusted. The table shows
+  from which magnitude it can be;
+* what a set of VRR constants does to the dataset: the share of frames below
+  ``f_min``, in the linear range and above ``f_max``, and how far the virtual
+  target leaves the end effector. The schedule is steep (0.05 mm of offset at
+  0.5 N, 25 mm at 5 N), so this is worth looking at before training.
 """
 
 from __future__ import annotations
@@ -72,20 +71,11 @@ def stable_force_threshold(
     return threshold
 
 
-def summarize(
-    episodes: list[np.ndarray],
-    per_decade: int,
-    max_median_deg: float,
-    min_count: int,
-    paper_f_min: float,
-    reference_p90: float | None = None,
-) -> dict:
-    """Force statistics of a dataset and the force units they imply.
+def summarize(episodes: list[np.ndarray], per_decade: int, max_median_deg: float, min_count: int) -> dict:
+    """Distribution of the force magnitude and the stability of its direction.
 
     ``episodes`` holds one ``(T, 3)`` summed contact force per episode. Direction
-    changes are taken within an episode only. ``force_scale`` maps the stable
-    magnitude to ``paper_f_min`` newtons (``None`` when no magnitude is stable);
-    ``force_scale_p90`` maps the 90th percentile to ``reference_p90`` newtons.
+    changes are taken within an episode only.
     """
     pairs = [direction_changes(forces) for forces in episodes]
     magnitude = np.concatenate([m for m, _ in pairs])
@@ -95,7 +85,6 @@ def summarize(
     low = 10.0 ** np.floor(np.log10(positive.min())) if positive.size else 1e-12
     high = 10.0 ** np.ceil(np.log10(max(norms.max(), low * 10.0)))
     edges = log_edges(low, high, per_decade)
-    threshold = stable_force_threshold(magnitude, angle, edges, max_median_deg, min_count)
     return {
         "episodes": len(episodes),
         "frames": int(len(norms)),
@@ -107,23 +96,19 @@ def summarize(
         },
         "table": stability_table(magnitude, angle, edges),
         "criterion": {"max_median_deg": max_median_deg, "min_count": min_count, "per_decade": per_decade},
-        "stable_force_threshold": threshold,
-        "paper_f_min": paper_f_min,
-        "force_scale": None if threshold is None else paper_f_min / threshold,
-        "reference_p90": reference_p90,
-        "force_scale_p90": None if reference_p90 is None else reference_p90 / float(np.percentile(norms, 90)),
+        "stable_force_threshold": stable_force_threshold(magnitude, angle, edges, max_median_deg, min_count),
     }
 
 
-def describe_scale(forces: list[np.ndarray], ee_pos: list[np.ndarray], params: VirtualTargetParams) -> dict:
-    """What ``params`` does to the dataset: share of frames per regime and the virtual target's offset [mm]."""
+def describe_targets(forces: list[np.ndarray], ee_pos: list[np.ndarray], params: VirtualTargetParams) -> dict:
+    """What ``params`` makes of the dataset: share of frames per regime and the virtual target's offset [mm]."""
     newtons = np.concatenate([np.linalg.norm(np.asarray(f, dtype=np.float64), axis=1) for f in forces])
     newtons = newtons * params.force_scale
     offsets = 1000.0 * np.concatenate(
         [np.linalg.norm(virtual_target(e, f, params)[0] - e, axis=1) for f, e in zip(forces, ee_pos)]
     )
     return {
-        "force_scale": params.force_scale,
+        "params": params.to_dict(),
         "share_below_f_min": float((newtons < params.f_min).mean()),
         "share_between": float(((newtons >= params.f_min) & (newtons <= params.f_max)).mean()),
         "share_above_f_max": float((newtons > params.f_max).mean()),
