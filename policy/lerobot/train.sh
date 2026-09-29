@@ -14,7 +14,9 @@
 # tacforcing: the plugin built from --policy.type, initialised from
 #             lerobot/smolvla_base through its init_from; tactile_channels comes
 #             from the dataset's source_metadata.json. B=5, H=50, one sampling
-#             step per block (K=10 steps), as in the paper.
+#             step per block (K=10 steps), as in the paper. A dataset converted
+#             with --aux-target carries auxiliary targets behind the joints; its
+#             executed_action_dim is passed on so only the joints reach the robot.
 set -euo pipefail
 
 POLICY="${1:?smolvla|tacforcing}"
@@ -32,6 +34,8 @@ META="$DATASET/source_metadata.json"
 meta() { "$LEROBOT_PYTHON" -c "import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])" "$META" "$1"; }
 REPO_ID="$(meta repo_id)"
 TACTILE_CHANNELS="$(meta tactile_channels)"
+# Executed action dims when the action carries auxiliary targets, else 0 (the whole action).
+EXECUTED_ACTION_DIM="$("$LEROBOT_PYTHON" -c "import json,sys; m=json.load(open(sys.argv[1])); print(m['executed_action_dim'] if m.get('aux_target') else 0)" "$META")"
 RENAME_MAP="$("$LEROBOT_PYTHON" - "$META" <<'EOF'
 import json, sys
 cams = json.load(open(sys.argv[1]))["cameras"]
@@ -48,6 +52,10 @@ fi
 
 case "$POLICY" in
   smolvla)
+    if [ "$EXECUTED_ACTION_DIM" != "0" ]; then
+      echo "$DATASET carries auxiliary action targets; stock smolvla would execute them. Use tacforcing." >&2
+      exit 1
+    fi
     POLICY_ARGS=(
       --policy.path=lerobot/smolvla_base
       --rename_map="$RENAME_MAP"
@@ -63,6 +71,9 @@ case "$POLICY" in
       --policy.n_action_steps=50
       --policy.steps_per_block=1
     )
+    if [ "$EXECUTED_ACTION_DIM" != "0" ]; then
+      POLICY_ARGS+=(--policy.executed_action_dim="$EXECUTED_ACTION_DIM")
+    fi
     ;;
   *)
     echo "unknown policy '$POLICY' (smolvla|tacforcing)" >&2
