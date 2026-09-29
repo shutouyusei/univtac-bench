@@ -59,6 +59,31 @@ policy type and the saved preprocessor (normalisation, camera renaming) from it.
 Set `lerobot_port` to reuse a server started by hand:
 `$LR policy/lerobot/server.py --port 10800`.
 
+## Auxiliary action targets (VRR)
+
+ImplicitRDP's virtual-target regularisation (arXiv 2512.10946) widens the action
+to `[joint 8, virtual target 3, stiffness 1]`. The policy generates and is
+supervised on all 12 dims; the plugin's `executed_action_dim` drops the last 4
+after unnormalising, so the server still returns 8 joints.
+
+```bash
+# 1. episodes with the fingertip contact force (docs/Collection.md, "Filling missing observations")
+python scripts/replay.py insert_hole clean51_force --headless \
+  --data-root data/insert_hole/clean51 --record-dir data/insert_hole/clean51_force
+# 2. convert -> policy/lerobot/data/local/insert_hole-clean51_force-100-vt
+$LR policy/lerobot/process_data.py insert_hole clean51_force 100 --aux-target virtual_target
+# 3. train; train.sh reads executed_action_dim from source_metadata.json
+bash policy/lerobot/train.sh tacforcing policy/lerobot/data/local/insert_hole-clean51_force-100-vt 60000
+```
+
+The target is `x_vt = x_ee - f / k(|f|)` with `f` the force summed over both
+fingertips (the grip squeezes cancel) and `k` falling linearly from 10000 N/m
+below 0.5 N to 200 N/m above 5 N: about 0.05 mm of offset at 0.5 N, 25 mm at
+5 N. The constants are ImplicitRDP's and apply to the recorded force in
+newtons; they are written to `source_metadata.json` (`aux_target`). Every
+other observation, the state and the first 8 action dims are those of the
+plain conversion of the same episodes.
+
 ## When the server fails
 
 `scripts/eval_policy.py` catches every exception from `policy.eval`, writes it

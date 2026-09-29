@@ -49,10 +49,25 @@ def tactile_stream_key(f: h5py.File, cam: str) -> str:
     raise KeyError(f"no tactile/{cam}_tactile/rgb_marker or tactile/{cam}_gsmini/rgb_marker in {f.filename}")
 
 
+def read_contact(f: h5py.File) -> dict:
+    """End-effector position ``(T, 3)`` and the contact force summed over the fingertips ``(T, 3)``.
+
+    The grip squeezes of the two fingertips cancel in the sum, which leaves the
+    external force on the grasped object. ``force`` is ``None`` for episodes
+    recorded without it.
+    """
+    keys = [f"tactile/{cam}_tactile/force" for cam in TACTILE_CAMERAS]
+    force = None
+    if all(key in f for key in keys):
+        force = np.sum([np.asarray(f[key][()], dtype=np.float64) for key in keys], axis=0)
+    return {"ee_pos": np.asarray(f["embodiment/ee"][()], dtype=np.float64)[:, :3], "force": force}
+
+
 def read_episode(path: Path, cameras: tuple[str, ...]) -> dict:
-    """One HDF5 episode -> joints, RGB camera frames per camera, RGB rgb_marker frames per fingertip."""
+    """One HDF5 episode -> joints, RGB frames per camera and fingertip, end-effector position, contact force."""
     with h5py.File(str(path), "r") as f:
         return {
+            **read_contact(f),
             "joint": np.asarray(f["embodiment/joint"][()], dtype=np.float32),
             "cameras": {cam: decode_frames(f[f"observation/{cam}/rgb"][()]) for cam in cameras},
             "tactile": {cam: decode_frames(f[tactile_stream_key(f, cam)][()]) for cam in TACTILE_CAMERAS},

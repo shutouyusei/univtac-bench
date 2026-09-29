@@ -45,8 +45,12 @@ def build_features(
     use_videos: bool,
     state_dim: int = STATE_DIM,
     action_dim: int = STATE_DIM,
+    aux_action_names: list[str] | tuple[str, ...] = (),
 ) -> dict:
-    """LeRobot feature schema: one image feature per camera, state, action, environment_state."""
+    """LeRobot feature schema: one image feature per camera, state, action, environment_state.
+
+    ``aux_action_names`` are auxiliary targets stored behind the ``action_dim`` executed dims.
+    """
     features: dict = {}
     for key, (h, w) in image_shapes.items():
         features[key] = {
@@ -61,8 +65,8 @@ def build_features(
     }
     features[ACTION_KEY] = {
         "dtype": "float32",
-        "shape": (action_dim,),
-        "names": [f"joint_{i}" for i in range(action_dim)],
+        "shape": (action_dim + len(aux_action_names),),
+        "names": [f"joint_{i}" for i in range(action_dim)] + list(aux_action_names),
     }
     features[ENV_STATE_KEY] = {
         "dtype": "float32",
