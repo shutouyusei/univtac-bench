@@ -63,9 +63,12 @@ python scripts/replay.py lift_bottle clean --headless \
 `observation_settings.tactile` accepts two opt-in entries, `force` and
 `torque`: the net contact force on each gel pad and its torque about the gel's
 `pose` origin, both in the simulation world frame, read from libuipc's contact
-gradients of the last solve (`VisualTactileSensor.get_contact_wrench`). The
-left and right squeeze cancel in the sum over both pads, so that sum is the
-external contact wrench on the grasped object. `task_config/clean51_force.yml`
+gradients of the last solve (`VisualTactileSensor.get_contact_wrench`), in
+newtons and newton metres. libuipc reports gradients of energies it has
+multiplied by `dt^2`, so the sensor divides by `dt^2`. The left and right
+squeeze cancel in the sum over both pads, so that sum is the external contact
+wrench on the grasped object; the squeeze itself is on the order of 100 N per
+pad in `insert_hole`. `task_config/clean51_force.yml`
 is `clean51` with both enabled.
 
 ### Filling missing observations into a collected dataset
@@ -134,8 +137,8 @@ Below is the structure of the saved observation data for each episode (stored in
             "press_depth": "np.ndarray(240, 320), positive indentation in mm",
             "marker": "np.ndarray(2, 63, 2)",
             "pose": "np.ndarray(7,)",
-            "force": "np.ndarray(3,), net contact force on the gel, world frame (opt-in)",
-            "torque": "np.ndarray(3,), contact torque about the gel pose origin, world frame (opt-in)",
+            "force": "np.ndarray(3,), net contact force on the gel [N], world frame (opt-in)",
+            "torque": "np.ndarray(3,), contact torque about the gel pose origin [N m], world frame (opt-in)",
             "rgb": "np.ndarray(240, 320, 3)",
             "rgb_marker": "np.ndarray(240, 320, 3)"
         },

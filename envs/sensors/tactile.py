@@ -27,7 +27,12 @@ from uipc import builtin, view
 from uipc.core import ContactSystemFeature
 from uipc.geometry import Geometry
 
-from .contact_force import accumulate_vertex_forces, gel_vertex_forces, wrench_about
+from .contact_force import (
+    accumulate_vertex_forces,
+    from_incremental_potential,
+    gel_vertex_forces,
+    wrench_about,
+)
 from ..utils.transforms import *
 
 if TYPE_CHECKING:
@@ -353,13 +358,13 @@ class VisualTactileSensor:
         return geo_slot.geometry()
 
     def get_contact_wrench(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Net contact force and torque on this gel pad in the simulation world frame.
+        """Net contact force [N] and torque [N m] on this gel pad in the simulation world frame.
 
         libuipc's ContactSystemFeature reports the contact-energy gradient of the last
         solve per touched vertex (global index) and contact primitive type; the force
-        on a vertex is minus that gradient. The torque is taken about the gel's
-        attachment origin (the ``pose`` observation), so force and torque together are
-        the wrench a sensor at the fingertip would read.
+        on a vertex is minus that gradient, in libuipc's dt^2-scaled unit. The torque
+        is taken about the gel's attachment origin (the ``pose`` observation), so force
+        and torque together are the wrench a sensor at the fingertip would read.
         """
         if self._contact_feature is None:
             feature = self.uipc_sim.world.features().find(ContactSystemFeature)
@@ -379,6 +384,9 @@ class VisualTactileSensor:
         per_vertex = accumulate_vertex_forces(n_verts, contributions)
         positions = np.asarray(geo.positions().view()).reshape(-1, 3)
         force, torque = wrench_about(self.get_attach_pose().p, positions, per_vertex)
+        dt = float(self.uipc_sim.cfg.dt)
+        force = from_incremental_potential(force, dt)
+        torque = from_incremental_potential(torque, dt)
         return (
             torch.tensor(force, dtype=torch.float32),
             torch.tensor(torque, dtype=torch.float32),

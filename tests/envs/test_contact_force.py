@@ -1,7 +1,12 @@
 import numpy as np
 import pytest
 
-from envs.sensors.contact_force import accumulate_vertex_forces, gel_vertex_forces, wrench_about
+from envs.sensors.contact_force import (
+    accumulate_vertex_forces,
+    from_incremental_potential,
+    gel_vertex_forces,
+    wrench_about,
+)
 
 
 def test_gel_vertex_forces_keeps_only_the_gel_window_and_flips_the_gradient_sign():
@@ -48,3 +53,14 @@ def test_wrench_about_is_translation_aware():
 def test_wrench_about_rejects_mismatched_shapes():
     with pytest.raises(ValueError):
         wrench_about(np.zeros(3), np.zeros((2, 3)), np.zeros((3, 3)))
+
+
+def test_from_incremental_potential_divides_by_the_squared_time_step():
+    # 3.873 N at 120 Hz is reported by libuipc as 3.873 / 14400
+    reported = np.array([0.0, 0.0, -3.873 / 14400.0])
+    np.testing.assert_allclose(from_incremental_potential(reported, dt=1 / 120), [0.0, 0.0, -3.873])
+
+
+def test_from_incremental_potential_rejects_a_non_positive_time_step():
+    with pytest.raises(ValueError):
+        from_incremental_potential(np.zeros(3), dt=0.0)
