@@ -68,11 +68,11 @@ left and right squeeze cancel in the sum over both pads, so that sum is the
 external contact wrench on the grasped object. `task_config/clean51_force.yml`
 is `clean51` with both enabled.
 
-### Re-recording a collected dataset under another config
+### Filling missing observations into a collected dataset
 
-`scripts/replay.py` can replay one dataset's joint trajectories while saving
-every replayed frame with the observation types of the active config, for
-example to add `force`/`torque` to episodes collected without them:
+`scripts/replay.py --record-dir` replays a dataset's joint trajectories under
+the active config and adds the observation types the episodes lack, for
+example `force`/`torque` for episodes collected without them:
 
 ```bash
 python scripts/replay.py insert_hole clean51_force --headless \
@@ -80,10 +80,18 @@ python scripts/replay.py insert_hole clean51_force --headless \
   --record-dir data/insert_hole/clean51_force
 ```
 
-The output uses the collect layout (`hdf5/<seed>.hdf5`, `metadata.json`); each
-metadata entry copies the source episode's entry and adds `replayed_from`,
-`replay_result` and the replay tracking errors (`replay_tracking`), so the
-deviation of the re-recorded episode from the original is on record.
+Each output episode `hdf5/<seed>.hdf5` is the source file plus the added
+datasets. Nothing of the source is replaced: joints, end-effector pose, images
+and tactile frames are the collected ones, so the filled dataset gives a policy
+the same inputs and actions as the source. The added datasets have one row per
+source frame; a replay with another frame count is rejected. The source
+dataset itself is never written to.
+
+The added values are measured on the replayed trajectory, which follows the
+recorded one only up to the controller's tracking error. Each `metadata.json`
+entry copies the source episode's entry and adds `replayed_from`,
+`replay_result`, `added_observations` and the tracking errors of the joints and
+actors (`replay_tracking`), so episodes whose replay drifted can be excluded.
 
 ## Data Structure
 

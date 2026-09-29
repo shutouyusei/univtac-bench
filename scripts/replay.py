@@ -22,6 +22,10 @@ from envs.utils.env_parser import (
     load_task_config,
 )
 from envs.utils.replay_record import (
+    episode_output_paths,
+    hdf5_dataset_paths,
+    merge_missing_observations,
+    missing_observations,
     redirect_episode_output,
     source_metadata_entry,
     write_metadata_entry,
@@ -78,8 +82,9 @@ parser.add_argument(
     type=str,
     default=None,
     help=(
-        "Re-record every replayed frame with the active config's observation types "
-        "into <record-dir>/hdf5/<seed>.hdf5 (+ metadata.json), in the collect layout."
+        "Fill in the observations the replayed episodes lack: write "
+        "<record-dir>/hdf5/<seed>.hdf5 = the source episode plus the active config's "
+        "observation types it does not have (+ metadata.json). Source data is kept as is."
     ),
 )
 add_config_override_argument(parser)
@@ -129,9 +134,11 @@ def replay(
 ):
     eval_start = time.perf_counter()
     task.reset(seed=seed)
+    source_paths = set()
+    added_observations = []
     if record_dir is not None:
         redirect_episode_output(task, record_dir, seed)
-        task.atom_tag = 'replay'
+        source_paths = hdf5_dataset_paths(data_path)
 
     succ = False
     # Replay only needs the robot state. Loading every observation would decode all
@@ -193,7 +200,13 @@ def replay(
         )
         observation = task._get_observations()
         if record_dir is not None:
-            task.save_observations(observation)
+            missing = missing_observations(observation, source_paths)
+            if not missing:
+                raise ValueError(
+                    f"{data_path} already holds every observation type of the active config; "
+                    "nothing to record."
+                )
+            task.save_observations(missing)
         target_qpos = recorded_qpos_list[idx]
         real_qpos = observation['embodiment']['joint'][:9]
         qpos_error = real_qpos - target_qpos
@@ -247,8 +260,11 @@ def replay(
         })
     replay_end_physics_step = task._physics_step_count
     if record_dir is not None:
-        # Only the replayed frames are the dataset; the settling frames below are not.
+        # One row per source frame; the settling frames below are not part of the episode.
         task.save_to_hdf5()
+        merged_path = episode_output_paths(record_dir, seed)[2]
+        added_observations = merge_missing_observations(data_path, task.save_path, merged_path)
+        task.save_path.unlink()
 
     # ``take_action`` stops advancing physics after ``step_lim`` is reached, so
     # the old post-replay take_action loop did not actually let released objects
@@ -387,6 +403,7 @@ def replay(
         entry = source_metadata_entry(data_path, seed)
         entry['replayed_from'] = str(data_path.resolve())
         entry['replay_result'] = succ_status
+        entry['added_observations'] = added_observations
         entry['replay_tracking'] = {
             'qpos': summary['overall'],
             'actor': summary['actor_tracking'],
