@@ -29,6 +29,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
+from policy.lerobot.convert.aux_targets import VirtualTargetParams  # noqa: E402
 from policy.lerobot.convert.pipeline import ConvertOptions, convert  # noqa: E402
 from policy.lerobot.tactile import EMBEDDINGS  # noqa: E402
 
@@ -47,14 +48,34 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--tactile-images", action="store_true", help="also store raw fingertip images")
     p.add_argument("--videos", action="store_true", help="store images as MP4 instead of image files")
     p.add_argument("--no-overwrite", action="store_true")
+    defaults = VirtualTargetParams()
+    p.add_argument("--aux-target", choices=("none", "virtual_target"), default="none",
+                   help="virtual_target appends VRR's [virtual target 3, stiffness 1] to every action")
+    p.add_argument("--force-scale", type=float, default=defaults.force_scale,
+                   help="newtons per unit of the recorded force; 1 for episodes recorded in newtons")
+    p.add_argument("--f-min", type=float, default=defaults.f_min, help="N")
+    p.add_argument("--f-max", type=float, default=defaults.f_max, help="N")
+    p.add_argument("--k-min", type=float, default=defaults.k_min, help="N/m")
+    p.add_argument("--k-max", type=float, default=defaults.k_max, help="N/m")
     return p.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
-    repo_id = args.repo_id or f"local/{args.task_name}-{args.task_config}-{args.episode_num}"
-    out_root = args.out or (REPO_ROOT / "policy" / "lerobot" / "data" / repo_id)
-    options = ConvertOptions(
+def virtual_target_params(args: argparse.Namespace) -> VirtualTargetParams | None:
+    if args.aux_target == "none":
+        return None
+    return VirtualTargetParams(
+        force_scale=args.force_scale, f_min=args.f_min, f_max=args.f_max, k_min=args.k_min, k_max=args.k_max
+    )
+
+
+def default_repo_id(args: argparse.Namespace) -> str:
+    """``local/<task>-<config>-<n>``, with ``-vt`` when the action carries the virtual target."""
+    suffix = "-vt" if args.aux_target == "virtual_target" else ""
+    return f"local/{args.task_name}-{args.task_config}-{args.episode_num}{suffix}"
+
+
+def build_options(args: argparse.Namespace) -> ConvertOptions:
+    return ConvertOptions(
         fps=args.fps,
         embedding=args.embedding,
         device=args.device,
@@ -62,7 +83,15 @@ def main() -> None:
         tactile_images=args.tactile_images,
         use_videos=args.videos,
         overwrite=not args.no_overwrite,
+        virtual_target=virtual_target_params(args),
     )
+
+
+def main() -> None:
+    args = parse_args()
+    options = build_options(args)
+    repo_id = args.repo_id or default_repo_id(args)
+    out_root = args.out or (REPO_ROOT / "policy" / "lerobot" / "data" / repo_id)
     metadata = convert(args.task_name, args.task_config, args.episode_num, out_root, repo_id, options)
     print(json.dumps({k: v for k, v in metadata.items() if k != "episodes"}, indent=2))
 
