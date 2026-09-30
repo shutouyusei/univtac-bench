@@ -7,6 +7,7 @@ sim and the real robot run one policy code base.
 ```
 process_data.py      CLI: HDF5 -> LeRobot v3 dataset            (lerobot env)
 train.sh             lerobot-train recipes: smolvla | tacforcing (lerobot env)
+analysis/            offline_report (block-wise MSE), sim_summary (paired success table)
 server.py            CLI: inference server                       (lerobot env)
 deploy_policy.py     UniVTAC BasePolicy adapter                  (Isaac env, no lerobot import)
 deploy_smolvla.yml, deploy_tacforcing.yml
@@ -71,6 +72,15 @@ names the output directory:
 ```bash
 RUN_NAME=tacforcing_hide bash policy/lerobot/train.sh tacforcing policy/lerobot/data/local/insert_hole-clean51-100 60000 \
   --policy.hide_finished_blocks=true
+```
+
+Offline and sim reports (`analysis/`): the block-wise MSE of a checkpoint on training chunks
+(free-running, tactile zeroed, teacher-forced) at chosen S, and the paired success table of
+several eval runs on the same seeds:
+
+```bash
+$LR -m policy.lerobot.analysis.offline_report <pretrained_model> policy/lerobot/data/local/insert_hole-clean51-100 --steps 1 5
+python -m policy.lerobot.analysis.sim_summary "clean=<metadata.json>" "hide=<metadata.json>"
 ```
 
 ## Auxiliary action targets (VRR)
