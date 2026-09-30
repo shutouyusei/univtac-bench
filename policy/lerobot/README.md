@@ -7,6 +7,7 @@ sim and the real robot run one policy code base.
 ```
 process_data.py      CLI: HDF5 -> LeRobot v3 dataset            (lerobot env)
 train.sh             lerobot-train recipes: smolvla | tacforcing (lerobot env)
+analysis/            offline_report (block-wise MSE), sim_summary (paired success table)
 server.py            CLI: inference server                       (lerobot env)
 deploy_policy.py     UniVTAC BasePolicy adapter                  (Isaac env, no lerobot import)
 deploy_smolvla.yml, deploy_tacforcing.yml
@@ -58,6 +59,29 @@ bash eval_policy.sh insert_hole clean51 lerobot/deploy_tacforcing 0 --total_num 
 policy type and the saved preprocessor (normalisation, camera renaming) from it.
 Set `lerobot_port` to reuse a server started by hand:
 `$LR policy/lerobot/server.py --port 10800`.
+
+`train.sh tacforcing` follows the paper's simulation setting (arXiv 2608.25798v2):
+K=10 blocks of B=5 actions, and through the plugin's defaults the loss averaged per
+sample before the batch (eq. 8, `loss_reduction`) and S=5 sampling steps per block at
+inference (N=50, `steps_per_block`). S is inference-only: `lerobot_steps_per_block` in the
+deploy file sets it for a run, whatever the checkpoint was saved with. Plugin options
+(`--policy.hide_finished_blocks=true`, `--policy.block_schedule_prob=0.5`,
+`--policy.finished_block_time=0.05`, ...) go after the step count, and `RUN_NAME`
+names the output directory:
+
+```bash
+RUN_NAME=tacforcing_hide bash policy/lerobot/train.sh tacforcing policy/lerobot/data/local/insert_hole-clean51-100 60000 \
+  --policy.hide_finished_blocks=true
+```
+
+Offline and sim reports (`analysis/`): the block-wise MSE of a checkpoint on training chunks
+(free-running, tactile zeroed, teacher-forced) at chosen S, and the paired success table of
+several eval runs on the same seeds:
+
+```bash
+$LR -m policy.lerobot.analysis.offline_report <pretrained_model> policy/lerobot/data/local/insert_hole-clean51-100 --steps 1 5
+python -m policy.lerobot.analysis.sim_summary "clean=<metadata.json>" "hide=<metadata.json>"
+```
 
 ## Auxiliary action targets (VRR)
 

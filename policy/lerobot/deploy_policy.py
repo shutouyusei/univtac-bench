@@ -15,6 +15,8 @@ deploy_*.yml keys (all optional except ``lerobot_ckpt_dir``):
 * ``lerobot_port``              0 starts a server on a free port; otherwise connect to a running one
 * ``lerobot_tactile_embedding`` ``cls`` or ``proj``, must match the training dataset
 * ``lerobot_image_size``        camera frame size the dataset was converted with
+* ``lerobot_steps_per_block``   sampling steps per block (S) for this run, block-streaming
+                                policies only; unset keeps the checkpoint's setting
 * ``lerobot_retries``, ``lerobot_request_timeout``, ``lerobot_startup_timeout``
 """
 
