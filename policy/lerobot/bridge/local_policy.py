@@ -21,7 +21,23 @@ def resolve_checkpoint(ckpt_dir: str) -> Path:
     return ckpt
 
 
-def load_policy(ckpt: Path, device: str):
+def apply_steps_per_block(config, steps_per_block: int | None) -> None:
+    """Set a block-streaming policy's sampling steps per block (S) for this run; None keeps the checkpoint's.
+
+    S is inference-only, so it is chosen at deploy time rather than baked into a checkpoint copy.
+    ``num_steps`` follows as blocks x S, the way the plugin derives it.
+    """
+    if steps_per_block is None:
+        return
+    if not hasattr(config, "steps_per_block"):
+        raise ValueError(f"{config.type} has no steps_per_block; the override applies to block-streaming policies")
+    if steps_per_block < 1:
+        raise ValueError(f"steps_per_block must be >= 1, got {steps_per_block}")
+    config.steps_per_block = steps_per_block
+    config.num_steps = config.chunk_size // config.block_size * steps_per_block
+
+
+def load_policy(ckpt: Path, device: str, steps_per_block: int | None = None):
     """Policy of the checkpoint's own type (plugins registered) and its saved pre/post processors."""
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.policies.factory import get_policy_class, make_pre_post_processors
@@ -30,7 +46,9 @@ def load_policy(ckpt: Path, device: str):
     register_third_party_plugins()
     config = PreTrainedConfig.from_pretrained(str(ckpt))
     config.device = device
-    print(f"[lerobot-server] loading {config.type} from {ckpt}")
+    apply_steps_per_block(config, steps_per_block)
+    print(f"[lerobot-server] loading {config.type} from {ckpt}"
+          + (f" at steps_per_block={steps_per_block}" if steps_per_block else ""))
     policy = get_policy_class(config.type).from_pretrained(str(ckpt), config=config)
     policy.to(device).eval()
     pre, post = make_pre_post_processors(
@@ -45,7 +63,10 @@ class LocalPolicy:
 
         self.device = str(args.get("lerobot_device", "cuda" if torch.cuda.is_available() else "cpu"))
         self.image_size = int(args.get("lerobot_image_size", 256))
-        self.policy, self.pre, self.post = load_policy(resolve_checkpoint(str(args["lerobot_ckpt_dir"])), self.device)
+        steps = args.get("lerobot_steps_per_block")
+        self.policy, self.pre, self.post = load_policy(
+            resolve_checkpoint(str(args["lerobot_ckpt_dir"])), self.device, int(steps) if steps else None
+        )
         embedding = str(args.get("lerobot_tactile_embedding", "cls"))
         self.encoder = FTP1GelSightEncoder.from_pretrained(embedding, device=self.device)
         print(f"[lerobot-server] FTP-1 encoder '{embedding}' ({self.encoder.embedding_dim} per fingertip)")

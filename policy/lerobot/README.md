@@ -59,6 +59,20 @@ policy type and the saved preprocessor (normalisation, camera renaming) from it.
 Set `lerobot_port` to reuse a server started by hand:
 `$LR policy/lerobot/server.py --port 10800`.
 
+`train.sh tacforcing` follows the paper's simulation setting (arXiv 2608.25798v2):
+K=10 blocks of B=5 actions, and through the plugin's defaults the loss averaged per
+sample before the batch (eq. 8, `loss_reduction`) and S=5 sampling steps per block at
+inference (N=50, `steps_per_block`). S is inference-only: `lerobot_steps_per_block` in the
+deploy file sets it for a run, whatever the checkpoint was saved with. Plugin options
+(`--policy.hide_finished_blocks=true`, `--policy.block_schedule_prob=0.5`,
+`--policy.finished_block_time=0.05`, ...) go after the step count, and `RUN_NAME`
+names the output directory:
+
+```bash
+RUN_NAME=tacforcing_hide bash policy/lerobot/train.sh tacforcing policy/lerobot/data/local/insert_hole-clean51-100 60000 \
+  --policy.hide_finished_blocks=true
+```
+
 ## Auxiliary action targets (VRR)
 
 ImplicitRDP's virtual-target regularisation (arXiv 2512.10946) widens the action

@@ -14,10 +14,13 @@
 #             tasks). Tactile is not an input: this is the "base" row.
 # tacforcing: the plugin built from --policy.type, initialised from
 #             lerobot/smolvla_base through its init_from; tactile_channels comes
-#             from the dataset's source_metadata.json. B=5, H=50, one sampling
-#             step per block (K=10 steps), as in the paper. A dataset converted
-#             with --aux-target carries auxiliary targets behind the joints; its
-#             executed_action_dim is passed on so only the joints reach the robot.
+#             from the dataset's source_metadata.json. B=5, H=50; the plugin's
+#             defaults give the paper's per-sample loss (eq. 8) and S=5 sampling
+#             steps per block at inference (arXiv 2608.25798v2, App. A.1). S is
+#             not a training parameter: steps_per_block.py re-targets a checkpoint.
+#             A dataset converted with --aux-target carries auxiliary targets
+#             behind the joints; its executed_action_dim is passed on so only
+#             the joints reach the robot.
 set -euo pipefail
 
 POLICY="${1:?smolvla|tacforcing}"
@@ -70,7 +73,6 @@ case "$POLICY" in
       --policy.block_size=5
       --policy.chunk_size=50
       --policy.n_action_steps=50
-      --policy.steps_per_block=1
     )
     if [ "$EXECUTED_ACTION_DIM" != "0" ]; then
       POLICY_ARGS+=(--policy.executed_action_dim="$EXECUTED_ACTION_DIM")
