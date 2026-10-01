@@ -37,7 +37,24 @@ def apply_steps_per_block(config, steps_per_block: int | None) -> None:
     config.num_steps = config.chunk_size // config.block_size * steps_per_block
 
 
-def load_policy(ckpt: Path, device: str, steps_per_block: int | None = None):
+def apply_n_action_steps(config, n_action_steps: int | None) -> None:
+    """Set how many actions of each chunk run before the next inference; None keeps the checkpoint's.
+
+    Like S, the execution horizon is inference-only. Block-streaming policies execute every
+    block of their chunk by design, so the override is refused there rather than ignored.
+    """
+    if n_action_steps is None:
+        return
+    if hasattr(config, "steps_per_block"):
+        raise ValueError(f"{config.type} streams the whole chunk; n_action_steps applies to chunking policies")
+    if not 1 <= n_action_steps <= config.chunk_size:
+        raise ValueError(f"n_action_steps must be in [1, {config.chunk_size}], got {n_action_steps}")
+    config.n_action_steps = n_action_steps
+
+
+def load_policy(
+    ckpt: Path, device: str, steps_per_block: int | None = None, n_action_steps: int | None = None
+):
     """Policy of the checkpoint's own type (plugins registered) and its saved pre/post processors."""
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.policies.factory import get_policy_class, make_pre_post_processors
@@ -47,8 +64,10 @@ def load_policy(ckpt: Path, device: str, steps_per_block: int | None = None):
     config = PreTrainedConfig.from_pretrained(str(ckpt))
     config.device = device
     apply_steps_per_block(config, steps_per_block)
+    apply_n_action_steps(config, n_action_steps)
     print(f"[lerobot-server] loading {config.type} from {ckpt}"
-          + (f" at steps_per_block={steps_per_block}" if steps_per_block else ""))
+          + (f" at steps_per_block={steps_per_block}" if steps_per_block else "")
+          + (f" executing {n_action_steps} of {config.chunk_size} actions" if n_action_steps else ""))
     policy = get_policy_class(config.type).from_pretrained(str(ckpt), config=config)
     policy.to(device).eval()
     pre, post = make_pre_post_processors(
@@ -64,8 +83,12 @@ class LocalPolicy:
         self.device = str(args.get("lerobot_device", "cuda" if torch.cuda.is_available() else "cpu"))
         self.image_size = int(args.get("lerobot_image_size", 256))
         steps = args.get("lerobot_steps_per_block")
+        executed = args.get("lerobot_n_action_steps")
         self.policy, self.pre, self.post = load_policy(
-            resolve_checkpoint(str(args["lerobot_ckpt_dir"])), self.device, int(steps) if steps else None
+            resolve_checkpoint(str(args["lerobot_ckpt_dir"])),
+            self.device,
+            int(steps) if steps else None,
+            int(executed) if executed else None,
         )
         embedding = str(args.get("lerobot_tactile_embedding", "cls"))
         self.encoder = FTP1GelSightEncoder.from_pretrained(embedding, device=self.device)
