@@ -17,6 +17,8 @@ deploy_*.yml keys (all optional except ``lerobot_ckpt_dir``):
 * ``lerobot_image_size``        camera frame size the dataset was converted with
 * ``lerobot_steps_per_block``   sampling steps per block (S) for this run, block-streaming
                                 policies only; unset keeps the checkpoint's setting
+* ``lerobot_n_action_steps``    actions executed per chunk before the next inference, chunking
+                                policies only; unset keeps the checkpoint's setting
 * ``lerobot_retries``, ``lerobot_request_timeout``, ``lerobot_startup_timeout``
 """
 
