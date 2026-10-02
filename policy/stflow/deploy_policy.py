@@ -110,7 +110,9 @@ class Policy(BasePolicy):
         return {"images": images, "tactile": tactile, "state": state}
 
     def eval(self, task, observation):
-        action = self.controller.act(self.encode_obs(observation)).to(task.device).float()
+        # Controllers may call the policy's encoder and expert directly; no graph is ever needed here.
+        with torch.inference_mode():
+            action = self.controller.act(self.encode_obs(observation)).to(task.device).float()
         return task.take_action(action, action_type="qpos")
 
     def reset(self):
