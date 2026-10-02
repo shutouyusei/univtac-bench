@@ -47,6 +47,15 @@ def to_uint8_hwc(frame) -> np.ndarray:
     return np.ascontiguousarray(frame[..., :3])
 
 
+def tactile_entry(observation: dict, side: str) -> dict:
+    """Fingertip ``side``'s observation under ``<side>_tactile`` or ``<side>_gsmini``, the names the
+    training reader (``stflow.data.univtac_hdf5.stream_key``) also accepts."""
+    for key in (f"{side}_tactile", f"{side}_gsmini"):
+        if key in observation["tactile"]:
+            return observation["tactile"][key]
+    raise KeyError(f"no {side}_tactile or {side}_gsmini in the tactile observation: {list(observation['tactile'])}")
+
+
 def jpeg_roundtrip(frame: np.ndarray) -> np.ndarray:
     ok, buf = cv2.imencode(".jpg", frame)
     if not ok:
@@ -69,8 +78,9 @@ class Policy(BasePolicy):
             raise ValueError(f"stflow_n_action_steps must be in 1..{self.cfg.chunk_size}")
         self.num_steps = args.get("stflow_num_steps") or self.cfg.num_inference_steps
         self.jpeg = bool(args.get("stflow_jpeg_roundtrip", True))
-        self.generator = torch.Generator().manual_seed(int(args.get("seed", 0)))
-        self.queue: list[np.ndarray] = []
+        self.seed = int(args.get("seed", 0))
+        self.generator = torch.Generator()
+        self.reset()
         print(f"stflow policy from {ckpt}: executing {self.n_action_steps}/{self.cfg.chunk_size}, "
               f"{self.num_steps} flow steps")
 
@@ -86,7 +96,7 @@ class Policy(BasePolicy):
 
     def encode_obs(self, observation: dict) -> dict:
         images = {c: self._frame(observation["observation"][c]["rgb"]) for c in self.cfg.camera_names}
-        tactile = {t: self._frame(observation["tactile"][f"{t}_tactile"]["rgb_marker"]) for t in self.cfg.tactile_names}
+        tactile = {t: self._frame(tactile_entry(observation, t)["rgb_marker"]) for t in self.cfg.tactile_names}
         joint = observation["embodiment"]["joint"]
         if isinstance(joint, torch.Tensor):
             joint = joint.detach().cpu().numpy()
@@ -101,7 +111,10 @@ class Policy(BasePolicy):
         return task.take_action(action, action_type="qpos")
 
     def reset(self):
-        self.queue = []
+        """Called before every episode: drop the unexecuted actions and restart the noise stream, so an
+        episode's sampled chunks depend on its own observations only, not on how many episodes ran before."""
+        self.queue: list[np.ndarray] = []
+        self.generator.manual_seed(self.seed)
 
     def close(self):
         pass

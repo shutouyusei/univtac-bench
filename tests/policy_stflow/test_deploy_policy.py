@@ -93,3 +93,41 @@ def test_executes_n_action_steps_before_sampling_again(ckpt, monkeypatch):
 def test_rejects_an_execution_horizon_beyond_the_chunk(ckpt):
     with pytest.raises(ValueError):
         make_policy(ckpt, stflow_n_action_steps=CHUNK + 1)
+
+
+def first_action(policy, obs):
+    task = FakeTask()
+    policy.eval(task, obs)
+    return task.actions[0]
+
+
+def test_an_episode_does_not_depend_on_the_episodes_before_it(ckpt):
+    """Re-running one seed alone must sample what it sampled inside a full evaluation."""
+    obs = observation(np.random.default_rng(3))
+    alone = first_action(make_policy(ckpt), obs)
+
+    policy = make_policy(ckpt)
+    other = observation(np.random.default_rng(4))
+    for _ in range(3):  # earlier episodes draw noise
+        policy.reset()
+        for _ in range(CHUNK + 2):
+            policy.eval(FakeTask(), other)
+    policy.reset()
+    assert torch.equal(first_action(policy, obs), alone)
+
+
+def test_actions_are_eight_joint_targets(ckpt):
+    action = first_action(make_policy(ckpt), observation(np.random.default_rng(5)))
+    assert action.shape == (8,) and action.dtype == torch.float32
+
+
+def test_reads_gsmini_fingertips_like_the_training_reader(ckpt):
+    obs = observation(np.random.default_rng(6))
+    renamed = {**obs, "tactile": {
+        "left_gsmini": obs["tactile"]["left_tactile"],
+        "right_gsmini": obs["tactile"]["right_tactile"],
+    }}
+    policy = make_policy(ckpt)
+    a = policy.encode_obs(obs)["tactile"]["left"]
+    b = policy.encode_obs(renamed)["tactile"]["left"]
+    assert torch.equal(a, b)
