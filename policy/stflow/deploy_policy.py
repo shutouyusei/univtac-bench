@@ -9,15 +9,17 @@ the adapter builds the same observation the training cache holds:
   with ``stflow.data.univtac_hdf5.resize_rgb``
 * ``embodiment/joint[:8]`` as the state
 
-It samples a chunk, executes ``stflow_n_action_steps`` of it as joint targets
-(``take_action(..., "qpos")``) and samples again.
+How actions are produced from those observations belongs to the checkpoint's method
+(``stflow.methods``): every control step the adapter hands the observation to the method's
+controller and executes the one action it returns as a joint target (``take_action(..., "qpos")``);
+``reset()`` before an episode resets the controller. A new method therefore needs no change here.
 
 deploy yml keys:
 
 * ``stflow_ckpt_dir``          checkpoint directory (``config.yaml`` + ``model.safetensors``);
                                relative paths resolve against the univtac-bench root
-* ``stflow_n_action_steps``    actions executed per chunk (default: the whole chunk)
-* ``stflow_num_steps``         flow integration steps (default: the checkpoint's)
+* ``stflow_method_args``       overrides of the checkpoint's method arguments for this evaluation,
+                               e.g. ``{n_action_steps: 25, num_steps: 5}`` for the chunk method
 * ``stflow_device``            default ``cuda:0``
 * ``stflow_jpeg_roundtrip``    default true
 """
@@ -63,26 +65,30 @@ def jpeg_roundtrip(frame: np.ndarray) -> np.ndarray:
     return cv2.imdecode(buf, cv2.IMREAD_COLOR)
 
 
+REMOVED_KEYS = {
+    "stflow_n_action_steps": "stflow_method_args: {n_action_steps: N}",
+    "stflow_num_steps": "stflow_method_args: {num_steps: S}",
+}
+
+
 class Policy(BasePolicy):
     def __init__(self, args: dict):
         from stflow import checkpoint
+        from stflow.methods import build_method
 
+        for key, replacement in REMOVED_KEYS.items():
+            if key in args:
+                raise ValueError(f"deploy key {key} was replaced by {replacement}")
         ckpt = Path(args["stflow_ckpt_dir"]).expanduser()
         if not ckpt.is_absolute():
             ckpt = _REPO_ROOT / ckpt
         self.device = torch.device(args.get("stflow_device", "cuda:0"))
         self.model, cfg = checkpoint.load(ckpt, self.device)
         self.cfg = cfg.model
-        self.n_action_steps = int(args.get("stflow_n_action_steps") or self.cfg.chunk_size)
-        if not 1 <= self.n_action_steps <= self.cfg.chunk_size:
-            raise ValueError(f"stflow_n_action_steps must be in 1..{self.cfg.chunk_size}")
-        self.num_steps = args.get("stflow_num_steps") or self.cfg.num_inference_steps
+        method_args = {**cfg.method.args, **(args.get("stflow_method_args") or {})}
+        self.controller = build_method(cfg.method.name, method_args).controller(self.model, seed=int(args.get("seed", 0)))
         self.jpeg = bool(args.get("stflow_jpeg_roundtrip", True))
-        self.seed = int(args.get("seed", 0))
-        self.generator = torch.Generator()
-        self.reset()
-        print(f"stflow policy from {ckpt}: executing {self.n_action_steps}/{self.cfg.chunk_size}, "
-              f"{self.num_steps} flow steps")
+        print(f"stflow policy from {ckpt}: method {cfg.method.name} {method_args}")
 
     def _frame(self, frame) -> torch.Tensor:
         from stflow.batch import image_to_float
@@ -104,17 +110,15 @@ class Policy(BasePolicy):
         return {"images": images, "tactile": tactile, "state": state}
 
     def eval(self, task, observation):
-        if not self.queue:
-            chunk = self.model.sample(self.encode_obs(observation), generator=self.generator, num_steps=self.num_steps)
-            self.queue = list(chunk[0, : self.n_action_steps].cpu().numpy())
-        action = torch.from_numpy(self.queue.pop(0)).to(task.device).float()
+        # Controllers may call the policy's encoder and expert directly; no graph is ever needed here.
+        with torch.inference_mode():
+            action = self.controller.act(self.encode_obs(observation)).to(task.device).float()
         return task.take_action(action, action_type="qpos")
 
     def reset(self):
-        """Called before every episode: drop the unexecuted actions and restart the noise stream, so an
-        episode's sampled chunks depend on its own observations only, not on how many episodes ran before."""
-        self.queue: list[np.ndarray] = []
-        self.generator.manual_seed(self.seed)
+        """Called before every episode; the controller drops what it carries and restarts its noise
+        stream, so an episode depends on its own observations only."""
+        self.controller.reset()
 
     def close(self):
         pass

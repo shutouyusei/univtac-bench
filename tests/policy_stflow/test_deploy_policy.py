@@ -8,7 +8,7 @@ import torch
 stflow = pytest.importorskip("stflow")
 
 from stflow import checkpoint  # noqa: E402
-from stflow.config import Config, ModelConfig  # noqa: E402
+from stflow.config import Config, MethodConfig, ModelConfig  # noqa: E402
 from stflow.data.univtac_hdf5 import decode  # noqa: E402
 from stflow.model.policy import FlowPolicy  # noqa: E402
 
@@ -70,8 +70,7 @@ def test_state_is_the_first_eight_joints(ckpt):
     assert state.tolist() == [list(range(8))]
 
 
-def test_executes_n_action_steps_before_sampling_again(ckpt, monkeypatch):
-    policy = make_policy(ckpt, stflow_n_action_steps=4)
+def count_samples(policy, monkeypatch) -> list:
     calls = []
     real = policy.model.sample
 
@@ -80,6 +79,12 @@ def test_executes_n_action_steps_before_sampling_again(ckpt, monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(policy.model, "sample", counting)
+    return calls
+
+
+def test_executes_n_action_steps_before_sampling_again(ckpt, monkeypatch):
+    policy = make_policy(ckpt, stflow_method_args={"n_action_steps": 4})
+    calls = count_samples(policy, monkeypatch)
     task = FakeTask()
     obs = observation(np.random.default_rng(1))
     for _ in range(9):
@@ -90,9 +95,31 @@ def test_executes_n_action_steps_before_sampling_again(ckpt, monkeypatch):
     assert len(calls) == 4
 
 
+def test_uses_the_checkpoint_method_and_lets_the_deploy_file_override_it(tmp_path, monkeypatch):
+    model = ModelConfig(
+        image_size=SIZE, pretrained_backbone=False, d_model=32, n_heads=4, n_layers=1,
+        dim_feedforward=64, dropout=0.0, chunk_size=CHUNK, num_inference_steps=2,
+    )
+    cfg = Config(model=model, method=MethodConfig(name="chunk", args={"n_action_steps": 2}))
+    path = checkpoint.save(tmp_path / "ckpt", FlowPolicy(model), cfg)
+    obs = observation(np.random.default_rng(2))
+    for extra, expected_samples in (({}, 3), ({"stflow_method_args": {"n_action_steps": 3}}, 2)):
+        policy = make_policy(path, **extra)
+        calls = count_samples(policy, monkeypatch)
+        for _ in range(6):
+            policy.eval(FakeTask(), obs)
+        assert len(calls) == expected_samples, extra
+
+
 def test_rejects_an_execution_horizon_beyond_the_chunk(ckpt):
     with pytest.raises(ValueError):
-        make_policy(ckpt, stflow_n_action_steps=CHUNK + 1)
+        make_policy(ckpt, stflow_method_args={"n_action_steps": CHUNK + 1})
+
+
+@pytest.mark.parametrize("key", ["stflow_n_action_steps", "stflow_num_steps"])
+def test_rejects_the_replaced_deploy_keys(ckpt, key):
+    with pytest.raises(ValueError, match="stflow_method_args"):
+        make_policy(ckpt, **{key: 4})
 
 
 def first_action(policy, obs):
