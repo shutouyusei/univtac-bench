@@ -1,0 +1,7 @@
+policy_name: stflow
+seed: 0
+instruction_type: seen
+stflow_ckpt_dir: ~/Desktop/Robotics/streaming-tactile-flow/outputs/base_insert_hole/checkpoints/last
+stflow_n_action_steps: 50
+stflow_device: cuda:0
+stflow_jpeg_roundtrip: true
