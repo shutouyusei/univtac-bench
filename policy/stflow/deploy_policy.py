@@ -8,6 +8,10 @@ the adapter builds the same observation the training cache holds:
   again the way UniVTAC's HDF5 writer stored the demonstrations, then resized
   with ``stflow.data.univtac_hdf5.resize_rgb``
 * ``embodiment/joint[:8]`` as the state
+* for a checkpoint whose model measures a ``marker`` tactile target (``model.tactile_target``, with
+  fingertips), each fingertip's raw ``marker`` observation (TacEx marker motion ``(2, M, 2)``:
+  reference and current positions) as ``tactile_marker``; the model matches and differences it itself.
+  The task config must record ``marker`` in ``observation_settings.tactile`` (clean51 does).
 
 How actions are produced from those observations belongs to the checkpoint's method
 (``stflow.methods``): every control step the adapter hands the observation to the method's
@@ -88,6 +92,8 @@ class Policy(BasePolicy):
         method_args = {**cfg.method.args, **(args.get("stflow_method_args") or {})}
         self.controller = build_method(cfg.method.name, method_args).controller(self.model, seed=int(args.get("seed", 0)))
         self.jpeg = bool(args.get("stflow_jpeg_roundtrip", True))
+        # Checkpoints from before tactile targets have no such field and never read the marker observation.
+        self.markers = getattr(self.cfg, "tactile_target", "none") == "marker" and bool(self.cfg.tactile_names)
         print(f"stflow policy from {ckpt}: method {cfg.method.name} {method_args}")
 
     def _frame(self, frame) -> torch.Tensor:
@@ -107,7 +113,21 @@ class Policy(BasePolicy):
         if isinstance(joint, torch.Tensor):
             joint = joint.detach().cpu().numpy()
         state = torch.as_tensor(np.asarray(joint, dtype=np.float32)[: self.cfg.state_dim])[None].to(self.device)
-        return {"images": images, "tactile": tactile, "state": state}
+        obs = {"images": images, "tactile": tactile, "state": state}
+        if self.markers:
+            obs["tactile_marker"] = {t: self._marker(tactile_entry(observation, t), t) for t in self.cfg.tactile_names}
+        return obs
+
+    def _marker(self, entry: dict, side: str) -> torch.Tensor:
+        if "marker" not in entry:
+            raise KeyError(
+                f"the checkpoint measures a marker tactile target but the {side} fingertip observation has no "
+                "'marker'; add 'marker' to observation_settings.tactile in the task config"
+            )
+        marker = entry["marker"]
+        if isinstance(marker, torch.Tensor):
+            marker = marker.detach().cpu().numpy()
+        return torch.as_tensor(np.asarray(marker, dtype=np.float32))[None].to(self.device)
 
     def eval(self, task, observation):
         # Controllers may call the policy's encoder and expert directly; no graph is ever needed here.
