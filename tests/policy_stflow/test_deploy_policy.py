@@ -1,5 +1,7 @@
 """The stflow adapter feeds the policy what the training cache holds and executes chunks in order."""
 
+import dataclasses
+
 import cv2
 import numpy as np
 import pytest
@@ -158,3 +160,66 @@ def test_reads_gsmini_fingertips_like_the_training_reader(ckpt):
     a = policy.encode_obs(obs)["tactile"]["left"]
     b = policy.encode_obs(renamed)["tactile"]["left"]
     assert torch.equal(a, b)
+
+
+def test_a_checkpoint_without_a_marker_target_reads_no_marker_observation(ckpt):
+    obs = observation(np.random.default_rng(7))  # no "marker" entries: reading one would fail
+    assert "tactile_marker" not in make_policy(ckpt).encode_obs(obs)
+
+
+def marker_grid() -> torch.Tensor:
+    rows, cols = torch.meshgrid(torch.arange(7.0), torch.arange(9.0), indexing="ij")
+    return torch.stack([44.14 + 28.97 * cols.flatten(), 35.26 + 28.25 * rows.flatten()], 1)
+
+
+def marker_ckpt(tmp_path, tactile_names):
+    if "tactile_target" not in {f.name for f in dataclasses.fields(ModelConfig)}:
+        pytest.skip("this stflow has no tactile targets")
+    pytest.importorskip("stflow.methods.sfp")
+    model = ModelConfig(
+        image_size=SIZE, pretrained_backbone=False, d_model=32, n_heads=4, n_layers=1, dim_feedforward=64,
+        dropout=0.0, chunk_size=CHUNK, tactile_names=tactile_names, tactile_target="marker", tactile_target_dim=252,
+    )
+    torch.manual_seed(0)
+    policy = FlowPolicy(model)
+    if policy.tactile_target is not None:
+        policy.tactile_target.grid.copy_(marker_grid().expand(2, -1, -1))
+    cfg = Config(model=model, method=MethodConfig(name="sfp", args={"n_action_steps": 2}))
+    return checkpoint.save(tmp_path / "ckpt", policy, cfg)
+
+
+def with_markers(obs: dict, rng) -> dict:
+    """The fingertip entries with UniVTAC's (2, 63, 2) marker motion, markers listed in a random order."""
+    grid = marker_grid()
+    for side in ("left_tactile", "right_tactile"):
+        perm = torch.from_numpy(rng.permutation(63))
+        current = grid + torch.from_numpy(rng.normal(size=(63, 2))).float()
+        obs["tactile"][side]["marker"] = torch.stack([grid[perm], current[perm]])
+    return obs
+
+
+def test_a_marker_target_checkpoint_gets_the_raw_marker_observation_and_measures_it(tmp_path):
+    policy = make_policy(marker_ckpt(tmp_path, ["left", "right"]))
+    obs = with_markers(observation(np.random.default_rng(8)), np.random.default_rng(9))
+    encoded = policy.encode_obs(obs)
+    for name in ("left", "right"):
+        marker = encoded["tactile_marker"][name]
+        assert marker.shape == (1, 2, 63, 2) and marker.dtype == torch.float32
+        assert torch.equal(marker[0], obs["tactile"][f"{name}_tactile"]["marker"])
+    measured = policy.model.measure_tactile_target(encoded)
+    task = FakeTask()
+    policy.eval(task, obs)
+    assert task.actions[0].shape == (8,) and torch.isfinite(task.actions[0]).all()
+    # The chunk started from the measured target: one Euler step moved it by velocity / H only.
+    assert torch.allclose(policy.controller.flow_state[0, 8:], measured[0], atol=1.0)
+    assert measured.abs().sum() > 0
+
+
+def test_a_no_tactile_marker_target_checkpoint_reads_no_tactile_observation(tmp_path):
+    policy = make_policy(marker_ckpt(tmp_path, []))
+    obs = observation(np.random.default_rng(10))
+    del obs["tactile"]  # nothing tactile may be read
+    task = FakeTask()
+    for _ in range(3):
+        policy.eval(task, obs)
+    assert len(task.actions) == 3 and all(torch.isfinite(a).all() for a in task.actions)
