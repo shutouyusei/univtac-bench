@@ -223,3 +223,51 @@ def test_a_no_tactile_marker_target_checkpoint_reads_no_tactile_observation(tmp_
     for _ in range(3):
         policy.eval(task, obs)
     assert len(task.actions) == 3 and all(torch.isfinite(a).all() for a in task.actions)
+
+
+def test_trace_records_the_prism_error_and_the_joints_of_every_step(ckpt):
+    from envs.utils.transforms import Pose
+
+    from policy.stflow.deploy_policy import TRACE_COLUMNS
+
+    class Holder:
+        def __init__(self, pose):
+            self.pose = pose
+
+        def get_pose(self):
+            return self.pose
+
+        get_gripper_center_pose = get_pose
+
+    def task_with_prism():
+        task = FakeTask()
+        task.metadata, task.take_action_cnt = {}, 7
+        task.prism = Holder(Pose([0.61, 0.02, 0.05]))
+        task.target_pose = Pose([0.6, 0.0, 0.1])
+        task._robot_manager = Holder(Pose([0.61, 0.02, 0.15]))
+        task.origin_inhand_pose = Pose([0.0, 0.0, -0.08])  # the prism now hangs 0.10 below the gripper centre
+        return task
+
+    obs = observation(np.random.default_rng(11))
+    task = task_with_prism()
+    policy = make_policy(ckpt, stflow_trace=True)
+    policy.eval(task, obs)
+    policy.eval(task, obs)
+    trace = task.metadata["trace"]
+    assert trace["columns"] == TRACE_COLUMNS and len(trace["rows"]) == 2
+    row = dict(zip(trace["columns"], trace["rows"][0]))
+    assert row["action_count"] == 7
+    assert (row["prism_x"], row["prism_y"], row["prism_z"]) == pytest.approx((0.01, 0.02, -0.05), abs=1e-5)
+    assert row["prism_axis_dot"] == pytest.approx(1.0) and row["inhand_slip"] == pytest.approx(0.02, abs=1e-5)
+    assert [row[f"command_{i}"] for i in range(8)] == pytest.approx(task.actions[0].tolist(), abs=1e-5)
+    assert [row[f"joint_{i}"] for i in range(8)] == pytest.approx(list(range(8)))
+
+    untraced = task_with_prism()
+    make_policy(ckpt).eval(untraced, obs)
+    assert "trace" not in untraced.metadata  # off by default
+
+    bare = FakeTask()  # a task without a held prism still gets the joints
+    bare.metadata, bare.take_action_cnt = {}, 0
+    policy.eval(bare, obs)
+    row = dict(zip(TRACE_COLUMNS, bare.metadata["trace"]["rows"][0]))
+    assert np.isnan(row["prism_x"]) and np.isnan(row["inhand_slip"]) and row["joint_3"] == 3.0

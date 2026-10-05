@@ -26,6 +26,11 @@ deploy yml keys:
                                e.g. ``{n_action_steps: 25, num_steps: 5}`` for the chunk method
 * ``stflow_device``            default ``cuda:0``
 * ``stflow_jpeg_roundtrip``    default true
+* ``stflow_trace``             default false; true records one row per control step under ``trace`` in the
+                               episode's ``metadata.json`` entry (see ``trace_row``): the commanded and
+                               measured joints and, for tasks with a held prism and a target pose, the
+                               prism's pose error in the target frame and its slip in the hand, read from
+                               the simulator state the policy does not see
 """
 
 from __future__ import annotations
@@ -74,6 +79,32 @@ REMOVED_KEYS = {
     "stflow_num_steps": "stflow_method_args: {num_steps: S}",
 }
 
+TRACE_COLUMNS = (
+    ["action_count", "prism_x", "prism_y", "prism_z", "prism_axis_dot", "inhand_slip"]
+    + [f"command_{i}" for i in range(8)]
+    + [f"joint_{i}" for i in range(8)]
+)
+
+
+def trace_row(task, joint: np.ndarray, action: np.ndarray) -> list[float]:
+    """One ``TRACE_COLUMNS`` row for the step about to be executed. ``prism_x/y/z`` is the held prism's
+    position in the task's target frame (success needs |x|, |y| < 0.01 and z < -0.04),
+    ``prism_axis_dot`` the cosine between the prism's axis and the target's (success > 0.99) and
+    ``inhand_slip`` the prism's displacement along the gripper axis since the grasp (early stop and
+    failure at 0.04). They are NaN for a task without ``prism`` / ``target_pose`` / ``origin_inhand_pose``."""
+    privileged = [float("nan")] * 5
+    if all(hasattr(task, name) for name in ("prism", "target_pose", "origin_inhand_pose")):
+        prism = task.prism.get_pose()
+        in_target = prism.rebase(task.target_pose)
+        in_hand = prism.rebase(task._robot_manager.get_gripper_center_pose())
+        privileged = [
+            *(float(v) for v in in_target[:3]),
+            float(in_target.to_transformation_matrix()[2, 2]),
+            float(abs(task.origin_inhand_pose[2] - in_hand[2])),
+        ]
+    row = [float(task.take_action_cnt), *privileged, *(float(v) for v in action[:8]), *(float(v) for v in joint[:8])]
+    return [round(v, 5) for v in row]
+
 
 class Policy(BasePolicy):
     def __init__(self, args: dict):
@@ -92,6 +123,7 @@ class Policy(BasePolicy):
         method_args = {**cfg.method.args, **(args.get("stflow_method_args") or {})}
         self.controller = build_method(cfg.method.name, method_args).controller(self.model, seed=int(args.get("seed", 0)))
         self.jpeg = bool(args.get("stflow_jpeg_roundtrip", True))
+        self.trace = bool(args.get("stflow_trace", False))
         # Checkpoints from before tactile targets have no such field and never read the marker observation.
         self.markers = getattr(self.cfg, "tactile_target", "none") == "marker" and bool(self.cfg.tactile_names)
         print(f"stflow policy from {ckpt}: method {cfg.method.name} {method_args}")
@@ -132,7 +164,12 @@ class Policy(BasePolicy):
     def eval(self, task, observation):
         # Controllers may call the policy's encoder and expert directly; no graph is ever needed here.
         with torch.inference_mode():
-            action = self.controller.act(self.encode_obs(observation)).to(task.device).float()
+            obs = self.encode_obs(observation)
+            action = self.controller.act(obs).to(task.device).float()
+        if self.trace:
+            # ``task.metadata`` is cleared at every episode reset and written by the task at its end.
+            trace = task.metadata.setdefault("trace", {"columns": TRACE_COLUMNS, "rows": []})
+            trace["rows"].append(trace_row(task, obs["state"][0].cpu().numpy(), action.cpu().numpy()))
         return task.take_action(action, action_type="qpos")
 
     def reset(self):
