@@ -26,6 +26,14 @@ def test_the_offset_goes_to_the_gripper_by_default_and_only_from_the_start_on():
     assert np.array_equal(d.at(d.start), expected) and np.array_equal(d.at(d.start + 100), expected)
 
 
+def test_dims_spread_the_magnitude_over_a_random_direction_of_those_joints():
+    cfg = {"magnitude": 0.003, "window": [100, 220], "dims": list(range(7))}
+    a, b = draw(cfg, 1000001), draw(cfg, 1000002)
+    for d in (a, b):
+        assert np.isclose(np.linalg.norm(d.offset), 0.003) and d.offset[7] == 0.0
+    assert not np.allclose(a.offset, b.offset)
+
+
 def test_prob_zero_disturbs_no_episode():
     d = draw({**CFG, "prob": 0.0}, 1000000)
     assert d.start is None and not d.at(10_000).any()

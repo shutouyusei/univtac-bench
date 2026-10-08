@@ -236,6 +236,46 @@ def test_recording_writes_one_row_per_step_with_the_offset_and_the_previous_corr
     assert np.allclose(z["previous"][:, 7], [0, 1.5, 1.5, 1.5, 1.5], atol=1e-5)
 
 
+class OracleTask(SeededTask):
+    """A held prism 2 mm off the target axis (tilt 0), a hand 0.1 m above it, an identity-like Jacobian."""
+
+    def __init__(self):
+        super().__init__()
+        target = np.eye(4)
+        prism = np.eye(4)
+        prism[0, 3] = 0.002
+        self.target_pose = type("P", (), {"to_transformation_matrix": lambda s: target})()
+        self.prism = type("A", (), {"get_pose": lambda s, kind="pose": prism})()
+        jac = torch.zeros(1, 3, 6, 9)
+        jac[0, 1, :, :6] = torch.eye(6)
+        jac[0, 1, 5, 6] = 1.0
+        data = type("D", (), {"body_link_pos_w": torch.tensor([[[0, 0, 0], [0, 0, 0.1], [0, 0, 0.2]]], dtype=torch.float32)})()
+        view = type("V", (), {"get_jacobians": lambda s: jac})()
+        robot = type("R", (), {"data": data, "root_physx_view": view})()
+        self._robot_manager = type("M", (), {"robot": robot, "_body_idx": 1, "_jacobi_body_idx": 1,
+                                             "_arm_ids": torch.arange(7)})()
+
+
+def test_the_oracle_is_recorded_and_beta_one_executes_it(ckpt, tmp_path):
+    from policy.stflow.oracle import correction as oracle_correction
+
+    obs = observation(np.random.default_rng(16))
+    executed = make_policy(ckpt, stflow_oracle={"gain": 0.5, "beta": 1.0}, stflow_correction_record=str(tmp_path / "r"))
+    clean = make_policy(ckpt)
+    a, b = OracleTask(), OracleTask()
+    executed.eval(a, obs)
+    clean.eval(b, obs)
+    t = a.target_pose.to_transformation_matrix()
+    dq, _ = oracle_correction(t, a.prism.get_pose("matrix"), np.array([0, 0, 0.1]),
+                              a._robot_manager.robot.root_physx_view.get_jacobians()[0, 1][:, :7].numpy())
+    diff = (a.actions[0] - b.actions[0]).numpy()
+    assert np.allclose(diff[:7], 0.5 * dq, atol=1e-6) and diff[7] == 0.0 and np.abs(dq).max() > 0
+    executed.reset()
+    z = np.load(tmp_path / "r" / "1000003.npz")
+    scale = executed.model.normalizer._std(executed.model.normalizer.action_std).numpy()
+    assert np.allclose(z["oracle"][0, :7], 0.5 * dq / scale[:7], atol=1e-4) and z["tilt"][0] < 1e-3
+
+
 def test_reads_gsmini_fingertips_like_the_training_reader(ckpt):
     obs = observation(np.random.default_rng(6))
     renamed = {**obs, "tactile": {

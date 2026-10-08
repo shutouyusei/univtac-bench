@@ -27,6 +27,9 @@ deploy yml keys:
 * ``stflow_device``            default ``cuda:0``
 * ``stflow_jpeg_roundtrip``    default true
 * ``stflow_disturb``           a known offset added to the executed joint targets (``policy.stflow.disturb``)
+* ``stflow_oracle``            ``{gain, max_tilt_deg, beta}``: the privileged insertion-phase correction
+                               (``policy.stflow.oracle``) recorded as the label of each row; ``beta`` > 0 also
+                               executes it (mixed with the head's as ``(1 - beta) head + beta oracle``)
 * ``stflow_disturb_log``       jsonl file receiving one line per step of a disturbed evaluation: the offset,
                                the commanded and measured gripper, and each fingertip's mean absolute pixel
                                change against the previous step and against the step before the offset began
@@ -107,6 +110,7 @@ class Policy(BasePolicy):
             self.head = load_head(args["stflow_correction"], self.device)
         self.head_noise = bool(args.get("stflow_correction_tactile_noise", False))
         self.record_dir = Path(args["stflow_correction_record"]) if args.get("stflow_correction_record") else None
+        self.oracle_cfg = args.get("stflow_oracle")
         self.step = 0
         self.disturbance = None
         self.tactile_prev: dict = {}
@@ -118,7 +122,8 @@ class Policy(BasePolicy):
               + (f", disturbance {self.disturb_cfg}" if self.disturb_cfg else "")
               + (f", correction {args['stflow_correction']}" if self.head is not None else "")
               + (" with noise tactile" if self.head_noise else "")
-              + (f", recording to {self.record_dir}" if self.record_dir else ""))
+              + (f", recording to {self.record_dir}" if self.record_dir else "")
+              + (f", oracle {self.oracle_cfg}" if self.oracle_cfg else ""))
 
     def _frame(self, frame) -> torch.Tensor:
         from stflow.batch import image_to_float
@@ -158,19 +163,45 @@ class Policy(BasePolicy):
         with torch.inference_mode():
             obs = self.encode_obs(observation)
             plan = self.controller.act(obs).to(task.device).float()
-            correcting = self.head is not None or self.record_dir is not None
+            correcting = self.head is not None or self.record_dir is not None or bool(self.oracle_cfg)
             if correcting:
                 plan_n, tactile, previous_n, correction = self._correction(obs, plan)
+        oracle, tilt = None, float("nan")
+        if self.oracle_cfg:
+            oracle, tilt = self._oracle(task, plan)
+            beta = float(self.oracle_cfg.get("beta", 0.0))
+            if beta > 0:
+                correction = (1.0 - beta) * correction + beta * oracle
         action = plan + correction if correcting else plan
         offset = np.zeros(plan.shape[-1], dtype=np.float32)
         if self.disturb_cfg:
             action, offset = self._disturb(task, observation, action)
         if self.record_dir is not None:
-            self._record(task, plan_n, tactile, previous_n, offset)
+            self._record(task, plan_n, tactile, previous_n, offset, oracle, tilt)
         if correcting:
             self.previous = correction
         self.step += 1
         return task.take_action(action, action_type="qpos")
+
+    def _oracle(self, task, plan):
+        """The privileged insertion-phase correction (``policy.stflow.oracle``) as a total correction in action
+        units: the correction executed one step before plus ``gain`` times the joint offset that puts the
+        prism on the target axis; zero before the alignment rotation (tilt above ``max_tilt_deg``)."""
+        from policy.stflow.oracle import correction as oracle_correction
+
+        rm = task._robot_manager
+        gain = float(self.oracle_cfg.get("gain", 0.5))
+        max_tilt = float(self.oracle_cfg.get("max_tilt_deg", 10.0))
+        target = task.target_pose.to_transformation_matrix()
+        prism = task.prism.get_pose("matrix")
+        p_ee = rm.robot.data.body_link_pos_w[0, rm._body_idx].detach().cpu().numpy()
+        jac = rm.robot.root_physx_view.get_jacobians()[0, rm._jacobi_body_idx][:, rm._arm_ids]
+        dq, tilt = oracle_correction(target, prism, p_ee, jac.detach().cpu().numpy(), max_tilt)
+        total = torch.zeros_like(plan)
+        if tilt <= max_tilt:
+            previous = self.previous if self.previous is not None else torch.zeros_like(plan)
+            total[:7] = previous[:7] + gain * torch.as_tensor(dq, dtype=plan.dtype, device=plan.device)
+        return total, tilt
 
     def _correction(self, obs, plan):
         """The head's correction for this step (zero without a head) and the inputs it was computed from,
@@ -190,24 +221,28 @@ class Policy(BasePolicy):
         correction = self.head(plan_n, tactile, previous_n)[0] * scale
         return plan_n, tactile, previous_n, correction
 
-    def _record(self, task, plan_n, tactile, previous_n, offset):
+    def _record(self, task, plan_n, tactile, previous_n, offset, oracle=None, tilt=float("nan")):
         from stflow.correction import action_scale
 
         self.seed = int(task.cfg.seed)
         scale = action_scale(self.model).cpu().numpy()
+        oracle_n = np.full(len(scale), np.nan, np.float32) if oracle is None else oracle.cpu().numpy() / scale
         self.rows.append((plan_n[0].cpu().numpy(), tactile[0].cpu().numpy().astype(np.float16),
-                          previous_n[0].cpu().numpy(), offset / scale))
+                          previous_n[0].cpu().numpy(), offset / scale, oracle_n, np.float32(tilt)))
         if len(self.rows) % 50 == 0:
             self._flush()
 
     def _flush(self):
-        """Write the episode's rows so far to ``<record dir>/<seed>.npz`` (overwritten as it grows)."""
+        """Write the episode's rows so far to ``<record dir>/<seed>.npz`` (overwritten as it grows): plan,
+        tactile, previous correction, offset (``delta``), the oracle's total correction (NaN without
+        ``stflow_oracle``) and the prism tilt it saw, all corrections in action-std units."""
         if self.record_dir is None or not self.rows or self.seed is None:
             return
         self.record_dir.mkdir(parents=True, exist_ok=True)
-        plan, tactile, previous, delta = (np.stack(c) for c in zip(*self.rows))
+        plan, tactile, previous, delta, oracle, tilt = (np.stack(c) for c in zip(*self.rows))
         np.savez(self.record_dir / f"{self.seed}.npz", plan=plan.astype(np.float32), tactile=tactile,
-                 previous=previous.astype(np.float32), delta=delta.astype(np.float32))
+                 previous=previous.astype(np.float32), delta=delta.astype(np.float32),
+                 oracle=oracle.astype(np.float32), tilt=tilt.astype(np.float32))
 
     def _disturb(self, task, observation, action):
         from policy.stflow.disturb import draw

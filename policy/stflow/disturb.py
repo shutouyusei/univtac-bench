@@ -4,7 +4,9 @@ outcome respond to it.
 Deploy key ``stflow_disturb`` (absent: no disturbance):
 
 * ``dim``        action index the offset goes to; default -1, the gripper (finger joint, metres; positive opens)
-* ``magnitude``  offset added from ``start`` to the end of the episode
+* ``dims``       instead of ``dim``: several action indices (e.g. the arm joints 0-6); the offset is
+                 ``magnitude`` times a random unit direction over them, drawn per episode seed
+* ``magnitude``  offset added from ``start`` to the end of the episode (the norm of the offset with ``dims``)
 * ``window``     ``[lo, hi]`` policy steps; ``start`` is drawn uniformly from it (inclusive)
 * ``prob``       chance that an episode is disturbed at all; default 1
 
@@ -37,6 +39,12 @@ def draw(cfg: dict, episode_seed: int) -> Disturbance:
     if rng.random() >= float(cfg.get("prob", 1.0)):
         return Disturbance(None, np.zeros(ACTION_DIM, dtype=np.float32))
     lo, hi = (int(v) for v in cfg["window"])
+    start = int(rng.integers(lo, hi + 1))
     offset = np.zeros(ACTION_DIM, dtype=np.float32)
-    offset[int(cfg.get("dim", -1))] = float(cfg["magnitude"])
-    return Disturbance(int(rng.integers(lo, hi + 1)), offset)
+    if "dims" in cfg:
+        dims = [int(d) for d in cfg["dims"]]
+        direction = rng.normal(size=len(dims))
+        offset[dims] = float(cfg["magnitude"]) * direction / np.linalg.norm(direction)
+    else:
+        offset[int(cfg.get("dim", -1))] = float(cfg["magnitude"])
+    return Disturbance(start, offset)
