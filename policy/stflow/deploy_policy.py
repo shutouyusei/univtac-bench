@@ -26,6 +26,10 @@ deploy yml keys:
                                e.g. ``{n_action_steps: 25, num_steps: 5}`` for the chunk method
 * ``stflow_device``            default ``cuda:0``
 * ``stflow_jpeg_roundtrip``    default true
+* ``stflow_disturb``           a known offset added to the executed joint targets (``policy.stflow.disturb``)
+* ``stflow_disturb_log``       jsonl file receiving one line per step of a disturbed evaluation: the offset,
+                               the commanded and measured gripper, and each fingertip's mean absolute pixel
+                               change against the previous step and against the step before the offset began
 """
 
 from __future__ import annotations
@@ -94,7 +98,14 @@ class Policy(BasePolicy):
         self.jpeg = bool(args.get("stflow_jpeg_roundtrip", True))
         # Checkpoints from before tactile targets have no such field and never read the marker observation.
         self.markers = getattr(self.cfg, "tactile_target", "none") == "marker" and bool(self.cfg.tactile_names)
-        print(f"stflow policy from {ckpt}: method {cfg.method.name} {method_args}")
+        self.disturb_cfg = args.get("stflow_disturb")
+        self.disturb_log = Path(args["stflow_disturb_log"]) if args.get("stflow_disturb_log") else None
+        self.step = 0
+        self.disturbance = None
+        self.tactile_prev: dict = {}
+        self.tactile_ref: dict = {}
+        print(f"stflow policy from {ckpt}: method {cfg.method.name} {method_args}"
+              + (f", disturbance {self.disturb_cfg}" if self.disturb_cfg else ""))
 
     def _frame(self, frame) -> torch.Tensor:
         from stflow.batch import image_to_float
@@ -133,12 +144,50 @@ class Policy(BasePolicy):
         # Controllers may call the policy's encoder and expert directly; no graph is ever needed here.
         with torch.inference_mode():
             action = self.controller.act(self.encode_obs(observation)).to(task.device).float()
+        if self.disturb_cfg:
+            action = self._disturb(task, observation, action)
+        self.step += 1
         return task.take_action(action, action_type="qpos")
+
+    def _disturb(self, task, observation, action):
+        from policy.stflow.disturb import draw
+
+        seed = int(task.cfg.seed)
+        if self.step == 0:
+            self.disturbance = draw(self.disturb_cfg, seed)
+        offset = self.disturbance.at(self.step)
+        action = action + torch.from_numpy(offset).to(action)
+        if self.disturb_log is not None:
+            self._log_step(seed, observation, action, offset)
+        return action
+
+    def _log_step(self, seed, observation, action, offset):
+        import json
+
+        line = {"seed": seed, "step": self.step, "start": self.disturbance.start, "offset": float(offset[-1]),
+                "cmd_gripper": float(action[-1])}
+        line["gripper"] = float(observation["embodiment"]["joint"][7])
+        for side in self.cfg.tactile_names:
+            frame = to_uint8_hwc(tactile_entry(observation, side)["rgb_marker"]).astype(np.int16)
+            if side in self.tactile_prev:
+                line[f"{side}_change"] = float(np.abs(frame - self.tactile_prev[side]).mean())
+            if self.disturbance.start is not None and self.step == self.disturbance.start - 1:
+                self.tactile_ref[side] = frame
+            if side in self.tactile_ref:
+                line[f"{side}_from_ref"] = float(np.abs(frame - self.tactile_ref[side]).mean())
+            self.tactile_prev[side] = frame
+        self.disturb_log.parent.mkdir(parents=True, exist_ok=True)
+        with self.disturb_log.open("a") as f:
+            f.write(json.dumps(line) + "\n")
 
     def reset(self):
         """Called before every episode; the controller drops what it carries and restarts its noise
         stream, so an episode depends on its own observations only."""
         self.controller.reset()
+        self.step = 0
+        self.disturbance = None
+        self.tactile_prev = {}
+        self.tactile_ref = {}
 
     def close(self):
         pass

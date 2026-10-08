@@ -150,6 +150,41 @@ def test_actions_are_eight_joint_targets(ckpt):
     assert action.shape == (8,) and action.dtype == torch.float32
 
 
+class SeededTask(FakeTask):
+    class cfg:
+        seed = 1000003
+
+
+def test_a_disturbance_moves_only_the_gripper_target_and_only_from_its_start(ckpt, tmp_path):
+    obs = observation(np.random.default_rng(11))
+    log = tmp_path / "disturb.jsonl"
+    disturbed = make_policy(ckpt, stflow_disturb={"magnitude": 0.01, "window": [3, 3]}, stflow_disturb_log=str(log))
+    clean = make_policy(ckpt)
+    a, b = SeededTask(), SeededTask()
+    for _ in range(6):
+        disturbed.eval(a, obs)
+        clean.eval(b, obs)
+    diffs = [x - y for x, y in zip(a.actions, b.actions)]
+    assert all(not d.any() for d in diffs[:3])
+    for d in diffs[3:]:
+        assert torch.allclose(d[-1], torch.tensor(0.01)) and not d[:-1].any()
+    lines = log.read_text().splitlines()
+    assert len(lines) == 6 and '"start": 3' in lines[0]
+
+
+def test_a_disturbance_is_redrawn_for_each_episode(ckpt):
+    policy = make_policy(ckpt, stflow_disturb={"magnitude": 0.01, "window": [0, 200]})
+    obs = observation(np.random.default_rng(12))
+    starts = []
+    for seed in (1000000, 1000001, 1000002, 1000003):
+        task = SeededTask()
+        task.cfg = type("cfg", (), {"seed": seed})
+        policy.reset()
+        policy.eval(task, obs)
+        starts.append(policy.disturbance.start)
+    assert len(set(starts)) > 1
+
+
 def test_reads_gsmini_fingertips_like_the_training_reader(ckpt):
     obs = observation(np.random.default_rng(6))
     renamed = {**obs, "tactile": {
