@@ -185,6 +185,57 @@ def test_a_disturbance_is_redrawn_for_each_episode(ckpt):
     assert len(set(starts)) > 1
 
 
+def constant_head(path, value: float):
+    """A saved correction head that always outputs ``value`` (correction units) on the gripper."""
+    from stflow.correction import CorrectionHead, save
+
+    head = CorrectionHead(8, 2 * 32, dims=[7])
+    torch.nn.init.zeros_(head.net[-1].weight)
+    torch.nn.init.constant_(head.net[-1].bias, value)
+    return save(path, head)
+
+
+def test_a_correction_head_adds_its_output_in_action_std_units(ckpt, tmp_path):
+    obs = observation(np.random.default_rng(13))
+    corrected = make_policy(ckpt, stflow_correction=str(constant_head(tmp_path / "h.pt", 2.0)))
+    clean = make_policy(ckpt)
+    a, b = SeededTask(), SeededTask()
+    for _ in range(3):
+        corrected.eval(a, obs)
+        clean.eval(b, obs)
+    scale = corrected.model.normalizer._std(corrected.model.normalizer.action_std)[-1]
+    for x, y in zip(a.actions, b.actions):
+        assert torch.allclose(x[-1] - y[-1], 2.0 * scale) and torch.equal(x[:-1], y[:-1])
+
+
+def test_an_untrained_head_changes_nothing(ckpt, tmp_path):
+    from stflow.correction import CorrectionHead, save
+
+    path = save(tmp_path / "zero.pt", CorrectionHead(8, 2 * 32, dims=[7]))
+    obs = observation(np.random.default_rng(14))
+    a, b = SeededTask(), SeededTask()
+    for _ in range(3):
+        make_policy(ckpt, stflow_correction=str(path)).eval(a, obs)
+        make_policy(ckpt).eval(b, obs)
+    assert all(torch.equal(x, y) for x, y in zip(a.actions, b.actions))
+
+
+def test_recording_writes_one_row_per_step_with_the_offset_and_the_previous_correction(ckpt, tmp_path):
+    obs = observation(np.random.default_rng(15))
+    policy = make_policy(ckpt, stflow_correction=str(constant_head(tmp_path / "h.pt", 1.5)),
+                         stflow_correction_record=str(tmp_path / "rec"),
+                         stflow_disturb={"magnitude": 0.01, "window": [2, 2]})
+    task = SeededTask()
+    for _ in range(5):
+        policy.eval(task, obs)
+    policy.reset()
+    z = np.load(tmp_path / "rec" / "1000003.npz")
+    scale = float(policy.model.normalizer._std(policy.model.normalizer.action_std)[-1])
+    assert z["plan"].shape == (5, 8) and z["tactile"].shape == (5, 64)
+    assert np.allclose(z["delta"][:, 7], [0, 0, 0.01 / scale, 0.01 / scale, 0.01 / scale], rtol=1e-5)
+    assert np.allclose(z["previous"][:, 7], [0, 1.5, 1.5, 1.5, 1.5], atol=1e-5)
+
+
 def test_reads_gsmini_fingertips_like_the_training_reader(ckpt):
     obs = observation(np.random.default_rng(6))
     renamed = {**obs, "tactile": {

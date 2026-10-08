@@ -100,12 +100,25 @@ class Policy(BasePolicy):
         self.markers = getattr(self.cfg, "tactile_target", "none") == "marker" and bool(self.cfg.tactile_names)
         self.disturb_cfg = args.get("stflow_disturb")
         self.disturb_log = Path(args["stflow_disturb_log"]) if args.get("stflow_disturb_log") else None
+        self.head = None
+        if args.get("stflow_correction"):
+            from stflow.correction import load as load_head
+
+            self.head = load_head(args["stflow_correction"], self.device)
+        self.head_noise = bool(args.get("stflow_correction_tactile_noise", False))
+        self.record_dir = Path(args["stflow_correction_record"]) if args.get("stflow_correction_record") else None
         self.step = 0
         self.disturbance = None
         self.tactile_prev: dict = {}
         self.tactile_ref: dict = {}
+        self.previous = None
+        self.rows: list = []
+        self.seed = None
         print(f"stflow policy from {ckpt}: method {cfg.method.name} {method_args}"
-              + (f", disturbance {self.disturb_cfg}" if self.disturb_cfg else ""))
+              + (f", disturbance {self.disturb_cfg}" if self.disturb_cfg else "")
+              + (f", correction {args['stflow_correction']}" if self.head is not None else "")
+              + (" with noise tactile" if self.head_noise else "")
+              + (f", recording to {self.record_dir}" if self.record_dir else ""))
 
     def _frame(self, frame) -> torch.Tensor:
         from stflow.batch import image_to_float
@@ -143,23 +156,71 @@ class Policy(BasePolicy):
     def eval(self, task, observation):
         # Controllers may call the policy's encoder and expert directly; no graph is ever needed here.
         with torch.inference_mode():
-            action = self.controller.act(self.encode_obs(observation)).to(task.device).float()
+            obs = self.encode_obs(observation)
+            plan = self.controller.act(obs).to(task.device).float()
+            correcting = self.head is not None or self.record_dir is not None
+            if correcting:
+                plan_n, tactile, previous_n, correction = self._correction(obs, plan)
+        action = plan + correction if correcting else plan
+        offset = np.zeros(plan.shape[-1], dtype=np.float32)
         if self.disturb_cfg:
-            action = self._disturb(task, observation, action)
+            action, offset = self._disturb(task, observation, action)
+        if self.record_dir is not None:
+            self._record(task, plan_n, tactile, previous_n, offset)
+        if correcting:
+            self.previous = correction
         self.step += 1
         return task.take_action(action, action_type="qpos")
+
+    def _correction(self, obs, plan):
+        """The head's correction for this step (zero without a head) and the inputs it was computed from,
+        in correction units; the previous correction carries across chunk boundaries until ``reset``."""
+        from stflow.correction import action_scale, tactile_features
+
+        scale = action_scale(self.model).to(plan)
+        plan_n = ((plan - self.model.normalizer.action_mean.to(plan)) / scale)[None]
+        tactile = tactile_features(self.model, obs["tactile"]).float()
+        if self.head_noise:
+            gen = torch.Generator().manual_seed(int(self.step) + 7919 * int(self.seed or 0))
+            tactile = torch.randn(tactile.shape, generator=gen).to(tactile)
+        previous = self.previous if self.previous is not None else torch.zeros_like(plan)
+        previous_n = (previous / scale)[None]
+        if self.head is None:
+            return plan_n, tactile, previous_n, torch.zeros_like(plan)
+        correction = self.head(plan_n, tactile, previous_n)[0] * scale
+        return plan_n, tactile, previous_n, correction
+
+    def _record(self, task, plan_n, tactile, previous_n, offset):
+        from stflow.correction import action_scale
+
+        self.seed = int(task.cfg.seed)
+        scale = action_scale(self.model).cpu().numpy()
+        self.rows.append((plan_n[0].cpu().numpy(), tactile[0].cpu().numpy().astype(np.float16),
+                          previous_n[0].cpu().numpy(), offset / scale))
+        if len(self.rows) % 50 == 0:
+            self._flush()
+
+    def _flush(self):
+        """Write the episode's rows so far to ``<record dir>/<seed>.npz`` (overwritten as it grows)."""
+        if self.record_dir is None or not self.rows or self.seed is None:
+            return
+        self.record_dir.mkdir(parents=True, exist_ok=True)
+        plan, tactile, previous, delta = (np.stack(c) for c in zip(*self.rows))
+        np.savez(self.record_dir / f"{self.seed}.npz", plan=plan.astype(np.float32), tactile=tactile,
+                 previous=previous.astype(np.float32), delta=delta.astype(np.float32))
 
     def _disturb(self, task, observation, action):
         from policy.stflow.disturb import draw
 
         seed = int(task.cfg.seed)
+        self.seed = seed
         if self.step == 0:
             self.disturbance = draw(self.disturb_cfg, seed)
         offset = self.disturbance.at(self.step)
         action = action + torch.from_numpy(offset).to(action)
         if self.disturb_log is not None:
             self._log_step(seed, observation, action, offset)
-        return action
+        return action, offset
 
     def _log_step(self, seed, observation, action, offset):
         import json
@@ -183,11 +244,15 @@ class Policy(BasePolicy):
     def reset(self):
         """Called before every episode; the controller drops what it carries and restarts its noise
         stream, so an episode depends on its own observations only."""
+        self._flush()
         self.controller.reset()
         self.step = 0
         self.disturbance = None
         self.tactile_prev = {}
         self.tactile_ref = {}
+        self.previous = None
+        self.rows = []
+        self.seed = None
 
     def close(self):
-        pass
+        self._flush()
