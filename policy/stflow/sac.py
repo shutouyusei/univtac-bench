@@ -63,10 +63,36 @@ def gaussian_log_prob(a: Tensor, mean: Tensor, log_std: Tensor) -> Tensor:
     return (-0.5 * z.pow(2) - log_std - 0.5 * LOG_2PI).sum(-1)
 
 
-def query_mask(n_obs: int, horizon: int, device) -> Tensor:
-    from stflow.methods.sfp import independent_query_mask
+def observation_layers(expert, obs_tokens: Tensor) -> Tensor:
+    """``(B, L, n_obs, d)``: the observation tokens entering each transformer layer. Under SFP's independent
+    query mask observations see only observations, so these states do not depend on any action and a chunk's
+    are computed once."""
+    states, h = [], obs_tokens
+    for layer in expert.transformer.layers:
+        states.append(h)
+        h = layer(h)
+    return torch.stack(states, dim=1)
 
-    return independent_query_mask(n_obs, horizon, device=device)
+
+def query_velocity(expert, obs_layers: Tensor, x: Tensor, t: Tensor, q: Tensor, tactile: Tensor | None = None,
+                   tactile_scale: float = 1.0) -> tuple[Tensor, Tensor]:
+    """Velocity ``(B, A)`` and action token ``(B, d)`` of query ``q`` ``(B,)`` at action ``x`` ``(B, A)`` and time
+    ``t`` ``(B,)``: ``expert(obs, x, t, mask=independent_query_mask, tactile)[:, q]`` computed on that one token
+    against the cached ``observation_layers`` (the query attends to the observations and itself only)."""
+    from stflow.model.expert import sinusoidal_time_embedding
+
+    time_emb = sinusoidal_time_embedding(t, expert.d_model).to(x.dtype)
+    z = expert.action_time_mlp(torch.cat([expert.action_in(x), time_emb], dim=-1)) + expert.action_pos[q]
+    z = z[:, None]
+    read = tactile is not None and tactile_scale != 0
+    for i, layer in enumerate(expert.transformer.layers):
+        n1 = layer.norm1(torch.cat([obs_layers[:, i].to(z.dtype), z], dim=1))
+        z = z + layer.self_attn(n1[:, -1:], n1, n1, need_weights=False)[0]
+        z = z + layer._ff_block(layer.norm2(z))
+        if read:
+            z = z + tactile_scale * expert.adapters[i](z, tactile)
+    hidden = expert.norm(z)[:, 0]
+    return expert.action_out(hidden), hidden
 
 
 def _np(t: Tensor, dtype=np.float32) -> np.ndarray:
@@ -76,10 +102,10 @@ def _np(t: Tensor, dtype=np.float32) -> np.ndarray:
 class SACController:
     """The SFP controller (open loop over ``n_action_steps``, fingertips re-read every ``tactile_refresh`` steps)
     with the fast residual as a stochastic action. ``act`` returns the joint target and a record for the replay
-    buffer (numpy): ``q`` (query = step in the chunk), ``x`` (normalised action before the step), ``v_slow``,
-    ``mean``, ``action`` (the executed residual), ``hidden`` (slow-side token of the query, critic input),
-    ``reading`` / ``tactile_tokens`` at a block start, ``obs_tokens`` at a chunk start, and ``reward`` (for the
-    previous step) at a block start inside a chunk."""
+    buffer (numpy): ``q`` (query = step in the chunk), ``x`` and ``x_slow`` (normalised action and slow-only
+    plan before the step), ``v_slow``, ``mean``, ``action`` (the executed residual), ``hidden`` (slow-side token
+    of the query, critic input), ``reading`` / ``tactile_tokens`` at a block start, ``obs_tokens`` at a chunk
+    start, and ``reward`` (for the previous step) at a block start inside a chunk."""
 
     def __init__(self, policy, learner: "SAC", n_action_steps: int, tactile_refresh: int, explore: bool = True,
                  seed: int = 0):
@@ -93,6 +119,7 @@ class SACController:
 
     def reset(self) -> None:
         self.step = 0
+        self.obs_layers = None
         self.obs_tokens = None
         self.tactile_tokens = None
         self.reading = None
@@ -101,10 +128,11 @@ class SACController:
 
     def act(self, observation: dict) -> tuple[Tensor, dict]:
         policy = self.policy
-        horizon = policy.cfg.chunk_size
-        new_chunk = self.obs_tokens is None or self.step == self.n_action_steps
+        expert, horizon = policy.expert, policy.cfg.chunk_size
+        new_chunk = self.obs_layers is None or self.step == self.n_action_steps
         if new_chunk:
             self.obs_tokens = policy.encode(observation)
+            self.obs_layers = observation_layers(expert, self.obs_tokens)
             self.x = policy.normalizer.action(observation["state"][:, : policy.cfg.action_dim])
             self.x_slow = self.x.clone()
             self.step = 0
@@ -112,55 +140,79 @@ class SACController:
         if new_block:
             self.tactile_tokens = policy.tactile_tokens(observation["tactile"])
             self.reading = pooled_reading(policy, self.tactile_tokens)
-        obs, q = self.obs_tokens, self.step
-        mask = query_mask(obs.shape[1], horizon, obs.device)
-        t = torch.full((1, horizon), q / horizon, device=obs.device, dtype=obs.dtype)
-        v_plan, h_plan = policy.expert(obs, self.x_slow[:, None].expand(-1, horizon, -1).to(obs.dtype), t,
-                                       mask=mask, return_hidden=True)
+        q = self.step
+        dtype = self.obs_layers.dtype
+        qq = torch.full((1,), q, device=self.x.device, dtype=torch.long)
+        t = torch.full((1,), q / horizon, device=self.x.device)
+        v_plan, h_plan = query_velocity(expert, self.obs_layers, self.x_slow.to(dtype), t, qq)
         reward = None
         if new_block and not new_chunk:
             names, d = policy.tactile.names, h_plan.shape[-1]
-            forecast = policy.tactile_predictor(h_plan[:, q]).float().view(1, len(names), d)
+            forecast = policy.tactile_predictor(h_plan).float().view(1, len(names), d)
             reward = -float((forecast - self.reading).pow(2).mean().sqrt())
-        xx = self.x[:, None].expand(-1, horizon, -1).to(obs.dtype)
-        v_s, hidden = policy.expert(obs, xx, t, mask=mask, return_hidden=True)
-        v_f = policy.expert(obs, xx, t, mask=mask, tactile=self.tactile_tokens, tactile_scale=1.0)
-        v_slow, mean = v_s[:, q], v_f[:, q] - v_s[:, q]
+        v_slow, hidden = query_velocity(expert, self.obs_layers, self.x.to(dtype), t, qq)
+        v_full, _ = query_velocity(expert, self.obs_layers, self.x.to(dtype), t, qq, tactile=self.tactile_tokens)
+        mean = v_full - v_slow
         action = mean
         if self.explore:
             eps = torch.randn(mean.shape, generator=self.generator).to(mean)
             action = mean + self.learner.log_std.detach().exp().to(mean) * eps
         record = {
             "q": q, "new_chunk": new_chunk, "new_block": new_block, "reward": reward,
-            "x": _np(self.x[0]), "v_slow": _np(v_slow[0]), "mean": _np(mean[0]), "action": _np(action[0]),
-            "hidden": _np(hidden[0, q], np.float16),
+            "x": _np(self.x[0]), "x_slow": _np(self.x_slow[0]), "v_slow": _np(v_slow[0]), "mean": _np(mean[0]),
+            "action": _np(action[0]), "hidden": _np(hidden[0], np.float16),
             "reading": _np(self.reading[0], np.float16) if new_block else None,
             "tactile_tokens": _np(self.tactile_tokens[0], np.float16) if new_block else None,
-            "obs_tokens": _np(obs[0], np.float16) if new_chunk else None,
+            "obs_tokens": _np(self.obs_tokens[0], np.float16) if new_chunk else None,
         }
         self.x = self.x + (v_slow + action).to(self.x.dtype) / horizon
-        self.x_slow = self.x_slow + v_plan[:, q].to(self.x_slow.dtype) / horizon
+        self.x_slow = self.x_slow + v_plan.to(self.x_slow.dtype) / horizon
         self.step += 1
         return policy.normalizer.unaction(self.x.float())[0].cpu(), record
 
 
-STEP_KEYS = ("chunk", "block", "q", "x", "v_slow", "hidden", "action", "r", "has_next")
-TABLE_KEYS = ("obs", "tac", "reading")
+STEP_KEYS = ("q", "x", "x_slow", "v_slow", "hidden", "action")
+
+
+class _Store:
+    """A growing array (first axis) with amortised doubling."""
+
+    def __init__(self):
+        self.data: np.ndarray | None = None
+        self.n = 0
+
+    def extend(self, values: np.ndarray) -> int:
+        start = self.n
+        if self.data is None:
+            self.data = np.empty((max(len(values), 1) * 64,) + values.shape[1:], dtype=values.dtype)
+        while self.n + len(values) > len(self.data):
+            grown = np.empty((2 * len(self.data),) + self.data.shape[1:], dtype=self.data.dtype)
+            grown[: self.n] = self.data[: self.n]
+            self.data = grown
+        self.data[self.n: self.n + len(values)] = values
+        self.n += len(values)
+        return start
+
+    def view(self) -> np.ndarray:
+        return self.data[: self.n]
 
 
 class ReplayBuffer:
-    """Episodes of records. Per episode: tables ``obs`` (chunks), ``tac`` and ``reading`` (blocks), and per step
-    ``chunk`` / ``block`` (table rows), ``q``, ``x``, ``v_slow``, ``hidden``, ``action``, ``r`` and ``has_next``
-    (False on the last step: every end is a truncation, so the last step has no next state and is never
-    sampled)."""
+    """Steps of all episodes in contiguous arrays. Tables: ``obs`` (observation tokens, one row per chunk), ``tac``
+    and ``reading`` (one row per block); per step ``chunk`` / ``block`` (table rows), ``q``, ``x``, ``x_slow``,
+    ``v_slow``, ``hidden``, ``action``, ``r`` and ``has_next`` (False on an episode's last step: every end is a
+    truncation, so the last step has no next state and is never sampled). ``end_episode`` returns the episode
+    with local table indices, the form ``save_episode`` / ``load_dir`` use."""
 
     def __init__(self):
-        self.episodes: list[dict] = []
+        self.tables = {k: _Store() for k in ("obs", "tac", "reading")}
+        self.steps = {k: _Store() for k in STEP_KEYS + ("chunk", "block", "r", "has_next")}
+        self.n_episodes = 0
         self._open: dict | None = None
-        self._valid: list[np.ndarray] = []
+        self._valid = _Store()
 
     def start_episode(self) -> None:
-        self._open = {k: [] for k in STEP_KEYS + TABLE_KEYS if k != "has_next"}
+        self._open = {k: [] for k in STEP_KEYS + ("obs", "tac", "reading", "chunk", "block", "r")}
 
     def add(self, record: dict) -> None:
         ep = self._open
@@ -173,7 +225,7 @@ class ReplayBuffer:
             ep["r"][-1] += record["reward"]
         ep["chunk"].append(len(ep["obs"]) - 1)
         ep["block"].append(len(ep["tac"]) - 1)
-        for k in ("q", "x", "v_slow", "hidden", "action"):
+        for k in STEP_KEYS:
             ep[k].append(record[k])
         ep["r"].append(0.0)
 
@@ -182,53 +234,61 @@ class ReplayBuffer:
         if not ep or not ep["q"]:
             return None
         n = len(ep["q"])
-        out = {k: np.stack(ep[k]) for k in TABLE_KEYS}
-        out.update({k: np.asarray(ep[k], dtype=np.int32) for k in ("chunk", "block", "q")})
-        out.update({k: np.stack(ep[k]) for k in ("x", "v_slow", "hidden", "action")})
+        out = {k: np.stack(ep[k]) for k in ("obs", "tac", "reading", "x", "x_slow", "v_slow", "hidden", "action")}
+        out.update({k: np.asarray(ep[k], dtype=np.int64) for k in ("chunk", "block", "q")})
         out["r"] = np.asarray(ep["r"], dtype=np.float32)
         out["has_next"] = np.arange(n) < n - 1
-        self._append(out)
+        self.append(out)
         return out
 
-    def _append(self, ep: dict) -> None:
-        self.episodes.append(ep)
-        self._valid.append(np.flatnonzero(ep["has_next"]))
+    def append(self, ep: dict) -> None:
+        chunk0 = self.tables["obs"].extend(ep["obs"])
+        block0 = self.tables["tac"].extend(ep["tac"])
+        self.tables["reading"].extend(ep["reading"])
+        step0 = self.steps["q"].n
+        for k in STEP_KEYS + ("r", "has_next"):
+            self.steps[k].extend(ep[k])
+        self.steps["chunk"].extend(ep["chunk"] + chunk0)
+        self.steps["block"].extend(ep["block"] + block0)
+        self._valid.extend(np.flatnonzero(ep["has_next"]) + step0)
+        self.n_episodes += 1
 
     def __len__(self) -> int:
-        return int(sum(len(v) for v in self._valid))
+        return self._valid.n
 
-    def sample(self, n: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
-        sizes = np.array([len(v) for v in self._valid], dtype=float)
-        eps = rng.choice(len(self._valid), size=n, p=sizes / sizes.sum())
-        steps = np.array([self._valid[e][rng.integers(len(self._valid[e]))] for e in eps])
-        return eps, steps
+    def sample(self, n: int, rng: np.random.Generator) -> np.ndarray:
+        """Global step indices with a next state, uniformly."""
+        return self._valid.view()[rng.integers(self._valid.n, size=n)]
 
-    def gather(self, eps: np.ndarray, steps: np.ndarray, device, offset: int = 0) -> dict:
-        """Tensors of the steps ``steps + offset`` (offset 1: the next states)."""
-        rows = [(self.episodes[e], k + offset) for e, k in zip(eps, steps)]
+    def gather(self, idx: np.ndarray, device) -> dict:
+        """Tensors of the steps ``idx``; ``obs`` are the chunk's observation tokens and ``chunk`` its global row."""
+        s = {k: v.view() for k, v in self.steps.items()}
+        chunk, block = s["chunk"][idx], s["block"][idx]
 
-        def stack(fn, dtype=torch.float32):
-            return torch.from_numpy(np.stack([fn(ep, k) for ep, k in rows])).to(device=device, dtype=dtype)
+        def put(a, dtype=torch.float32):
+            return torch.from_numpy(np.ascontiguousarray(a)).to(device=device, dtype=dtype)
 
         return {
-            "obs": stack(lambda ep, k: ep["obs"][ep["chunk"][k]]),
-            "tac": stack(lambda ep, k: ep["tac"][ep["block"][k]]),
-            "reading": stack(lambda ep, k: ep["reading"][ep["block"][k]]),
-            "q": stack(lambda ep, k: ep["q"][k], torch.long),
-            "x": stack(lambda ep, k: ep["x"][k]),
-            "v_slow": stack(lambda ep, k: ep["v_slow"][k]),
-            "hidden": stack(lambda ep, k: ep["hidden"][k]),
-            "action": stack(lambda ep, k: ep["action"][k]),
-            "r": stack(lambda ep, k: ep["r"][k]),
+            "chunk": put(chunk, torch.long), "obs": put(self.tables["obs"].view()[chunk]),
+            "tac": put(self.tables["tac"].view()[block]), "reading": put(self.tables["reading"].view()[block]),
+            "q": put(s["q"][idx], torch.long), "x": put(s["x"][idx]), "x_slow": put(s["x_slow"][idx]),
+            "v_slow": put(s["v_slow"][idx]), "hidden": put(s["hidden"][idx]), "action": put(s["action"][idx]),
+            "r": put(s["r"][idx]),
         }
 
-    def save_episode(self, index: int, path: Path) -> None:
-        np.savez(path, **self.episodes[index])
+    @staticmethod
+    def save_episode(ep: dict, path: Path) -> None:
+        tmp = Path(path).with_suffix(".tmp.npz")
+        np.savez(tmp, **ep)
+        tmp.replace(path)
 
-    def load_dir(self, directory: Path) -> None:
-        for path in sorted(Path(directory).glob("*.npz")):
+    def load_dir(self, directory: Path, limit: int | None = None) -> None:
+        """Episodes ``<n>.npz`` in order, only those with ``n < limit`` if given."""
+        for path in sorted(Path(directory).glob("[0-9]*.npz")):
+            if limit is not None and int(path.stem) >= limit:
+                continue
             with np.load(path) as f:
-                self._append({k: f[k] for k in f.files})
+                self.append({k: f[k] for k in f.files})
 
 
 class TwinQ(nn.Module):
@@ -250,7 +310,8 @@ class TwinQ(nn.Module):
 
 class SAC:
     """Learner: the adapters of ``policy.expert`` and ``log_std`` (actor), a twin critic on
-    ``[slow hidden, pooled reading, x, q / H]`` with the residual divided by ``scale``, and the temperature."""
+    ``[slow hidden, pooled reading, x, x_slow, q / H]`` with the residual divided by ``scale``, and the
+    temperature. ``extra`` is saved with the learner (the session's episode counter and wandb id)."""
 
     def __init__(self, policy, cfg: SACConfig):
         self.policy, self.cfg = policy, cfg
@@ -264,7 +325,7 @@ class SAC:
         sigma = cfg.sigma_frac * self.scale
         self.log_std = nn.Parameter(sigma.log())
         self.target_entropy = float((sigma.log() + 0.5 * (LOG_2PI + 1)).sum())
-        state_dim = d + len(policy.tactile.names) * d + action_dim + 1
+        state_dim = d + len(policy.tactile.names) * d + 2 * action_dim + 1
         self.critic = TwinQ(state_dim, action_dim, cfg.hidden).to(self.device)
         self.target = copy.deepcopy(self.critic).requires_grad_(False)
         self.log_alpha = torch.tensor(math.log(cfg.init_alpha), device=self.device, requires_grad=True)
@@ -275,27 +336,42 @@ class SAC:
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=cfg.critic_lr)
         self.alpha_opt = torch.optim.Adam([self.log_alpha], lr=cfg.alpha_lr)
         self.updates = 0
+        self.extra: dict = {}
+
+    @torch.no_grad()
+    def obs_layers(self, *batches: dict) -> None:
+        """Adds ``obs_layers`` to each batch, computed once per distinct chunk over all of them."""
+        chunks = torch.cat([b["chunk"] for b in batches])
+        obs = torch.cat([b["obs"] for b in batches])
+        unique, inverse = torch.unique(chunks, return_inverse=True)
+        first = torch.zeros(len(unique), dtype=torch.long, device=chunks.device)
+        first.scatter_(0, inverse, torch.arange(len(chunks), device=chunks.device))
+        layers = observation_layers(self.policy.expert, obs[first])[inverse]
+        start = 0
+        for b in batches:
+            b["obs_layers"] = layers[start: start + len(b["chunk"])]
+            start += len(b["chunk"])
 
     def actor_mean(self, b: dict) -> Tensor:
-        policy, horizon = self.policy, self.policy.cfg.chunk_size
-        n = b["x"].shape[0]
-        xx = b["x"][:, None].expand(-1, horizon, -1)
-        t = (b["q"].float() / horizon)[:, None].expand(-1, horizon)
-        mask = query_mask(b["obs"].shape[1], horizon, self.device)
-        v_full = policy.expert(b["obs"], xx, t, mask=mask, tactile=b["tac"], tactile_scale=1.0)
-        return v_full[torch.arange(n, device=self.device), b["q"]].float() - b["v_slow"]
+        horizon = self.policy.cfg.chunk_size
+        v_full, _ = query_velocity(self.policy.expert, b["obs_layers"], b["x"], b["q"].float() / horizon, b["q"],
+                                   tactile=b["tac"])
+        return v_full.float() - b["v_slow"]
 
     def critic_state(self, b: dict) -> Tensor:
         horizon = self.policy.cfg.chunk_size
-        return torch.cat([b["hidden"], b["reading"].flatten(1), b["x"], (b["q"].float() / horizon)[:, None]], -1)
+        return torch.cat([b["hidden"], b["reading"].flatten(1), b["x"], b["x_slow"],
+                          (b["q"].float() / horizon)[:, None]], -1)
 
-    def update(self, buffer: ReplayBuffer, n_updates: int, rng: np.random.Generator) -> dict:
+    def update(self, buffer: ReplayBuffer, n_updates: int, rng: np.random.Generator, actor: bool = True) -> dict:
+        """``n_updates`` SAC steps; with ``actor=False`` only the critic learns (the actor and the temperature
+        stay as they are)."""
         cfg = self.cfg
         totals: dict[str, float] = {}
         for _ in range(n_updates):
-            eps, steps = buffer.sample(cfg.batch_size, rng)
-            b = buffer.gather(eps, steps, self.device)
-            nb = buffer.gather(eps, steps, self.device, offset=1)
+            idx = buffer.sample(cfg.batch_size, rng)
+            b, nb = buffer.gather(idx, self.device), buffer.gather(idx + 1, self.device)
+            self.obs_layers(b, nb)
             state, next_state = self.critic_state(b), self.critic_state(nb)
             alpha = self.log_alpha.exp().detach()
             std = self.log_std.exp()
@@ -311,33 +387,33 @@ class SAC:
             critic_loss.backward()
             nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.grad_clip)
             self.critic_opt.step()
+            step_stats = {"critic_loss": critic_loss.item(), "q_mean": q1.mean().item(),
+                          "target_mean": y.mean().item(), "alpha": alpha.item(), "std_mean": std.mean().item()}
 
-            mean = self.actor_mean(b)
-            a = mean + std * torch.randn_like(mean)
-            logp = gaussian_log_prob(a, mean, self.log_std)
-            nq1, nq2 = self.critic(state, a / self.scale)
-            actor_loss = (alpha * logp - torch.min(nq1, nq2)).mean()
-            self.actor_opt.zero_grad()
-            actor_loss.backward()
-            params = [p for g in self.actor_opt.param_groups for p in g["params"]]
-            nn.utils.clip_grad_norm_(params, cfg.grad_clip)
-            self.actor_opt.step()
-            self.critic_opt.zero_grad()  # the actor loss left gradients on the critic
+            if actor:
+                mean = self.actor_mean(b)
+                a = mean + std * torch.randn_like(mean)
+                logp = gaussian_log_prob(a, mean, self.log_std)
+                nq1, nq2 = self.critic(state, a / self.scale)
+                actor_loss = (alpha * logp - torch.min(nq1, nq2)).mean()
+                self.actor_opt.zero_grad()
+                actor_loss.backward()
+                params = [p for g in self.actor_opt.param_groups for p in g["params"]]
+                nn.utils.clip_grad_norm_(params, cfg.grad_clip)
+                self.actor_opt.step()
+                self.critic_opt.zero_grad()  # the actor loss left gradients on the critic
 
-            alpha_loss = -(self.log_alpha * (logp.detach() + self.target_entropy)).mean()
-            self.alpha_opt.zero_grad()
-            alpha_loss.backward()
-            self.alpha_opt.step()
+                alpha_loss = -(self.log_alpha * (logp.detach() + self.target_entropy)).mean()
+                self.alpha_opt.zero_grad()
+                alpha_loss.backward()
+                self.alpha_opt.step()
+                step_stats.update({"actor_loss": actor_loss.item(), "entropy": -logp.mean().item(),
+                                   "mean_abs": mean.abs().mean().item()})
 
             with torch.no_grad():
                 for p, tp in zip(self.critic.parameters(), self.target.parameters()):
                     tp.mul_(1 - cfg.tau).add_(cfg.tau * p)
             self.updates += 1
-            step_stats = {
-                "critic_loss": critic_loss.item(), "actor_loss": actor_loss.item(), "alpha": alpha.item(),
-                "q_mean": q1.mean().item(), "target_mean": y.mean().item(), "entropy": -logp.mean().item(),
-                "mean_abs": mean.abs().mean().item(), "std_mean": std.mean().item(),
-            }
             for k, v in step_stats.items():
                 totals[k] = totals.get(k, 0.0) + v / n_updates
         return totals
@@ -350,7 +426,7 @@ class SAC:
             "critic": self.critic.state_dict(), "target": self.target.state_dict(),
             "log_alpha": self.log_alpha.detach(), "actor_opt": self.actor_opt.state_dict(),
             "critic_opt": self.critic_opt.state_dict(), "alpha_opt": self.alpha_opt.state_dict(),
-            "updates": self.updates,
+            "updates": self.updates, "extra": self.extra,
         }, tmp)
         tmp.replace(path)
 
@@ -366,53 +442,59 @@ class SAC:
         self.critic_opt.load_state_dict(state["critic_opt"])
         self.alpha_opt.load_state_dict(state["alpha_opt"])
         self.updates = state["updates"]
+        self.extra = dict(state.get("extra", {}))
 
 
 class RLSession:
     """One SAC run inside the evaluation loop, everything under ``spec["dir"]``:
 
-    * ``mode: train``: explores, stores every episode in ``buffer/<n>.npz``, and after each episode (from
-      ``warmup_episodes`` on) runs ``utd`` updates per stored step, then saves ``learner.pt`` and ``state.json``.
-      A new session in the same directory resumes from them (the buffer is reloaded), so a crashed simulator
-      process loses at most the episode it was in.
+    * ``mode: train``: explores and after each episode stores it and learns: nothing before
+      ``warmup_episodes``, the critic only before ``actor_start_episodes``, then both, ``utd`` updates per stored
+      step. ``learner.pt`` (with the episode counter and the wandb id) is saved first, then the episode as
+      ``buffer/<n>.npz``; a new session in the same directory resumes from ``learner.pt`` and reloads the
+      episodes it counted, so a crashed simulator process loses at most the episode it was in.
     * ``mode: eval``: no exploration and no learning; loads ``spec["load"]`` (a ``learner.pt``) if given, else
       runs the checkpoint's own adapters.
 
     Every episode appends one line to ``log.jsonl`` (return, mean block reward, success, early stop, steps,
     residual sizes and, in training, the update statistics) and, with ``spec["wandb"] = {project, name}``, logs
-    the same to Weights & Biases (resumed with the run id kept in ``state.json``)."""
+    the same to Weights & Biases."""
 
     def __init__(self, policy, method_args: dict, spec: dict):
+        if float(method_args.get("tactile_scale", 1.0)) != 1.0 or getattr(policy.cfg, "tactile_noise", False):
+            raise ValueError("stflow_rl needs the trained setting: tactile_scale 1 and no tactile_noise model")
         self.dir = Path(spec["dir"]).expanduser()
         self.dir.mkdir(parents=True, exist_ok=True)
         self.mode = spec.get("mode", "train")
         if self.mode not in ("train", "eval"):
             raise ValueError(f"stflow_rl mode must be 'train' or 'eval', got {self.mode!r}")
+        self.actor_start = int(spec.get("actor_start_episodes", 0))
         self.cfg = SACConfig(**spec["config"])
         self.learner = SAC(policy, self.cfg)
         self.buffer = ReplayBuffer()
-        state_path = self.dir / "state.json"
-        self.state = {"episodes": 0, "wandb_id": None}
+        self.episodes, self.wandb_id = 0, None
         if self.mode == "train" and (self.dir / "learner.pt").exists():
             self.learner.load(self.dir / "learner.pt")
-            self.buffer.load_dir(self.dir / "buffer")
-            self.state.update(json.loads(state_path.read_text()))
+            self.episodes = int(self.learner.extra.get("episodes", 0))
+            self.wandb_id = self.learner.extra.get("wandb_id")
+            self.buffer.load_dir(self.dir / "buffer", limit=self.episodes)
         elif spec.get("load"):
             self.learner.load(Path(spec["load"]).expanduser())
-        self.rng = np.random.default_rng(int(spec.get("seed", 0)) + self.state["episodes"])
+        seed = int(spec.get("seed", 0)) + self.episodes
+        self.rng = np.random.default_rng(seed)
         self.controller = SACController(
             policy, self.learner, int(method_args["n_action_steps"]), int(method_args["tactile_refresh"]),
-            explore=self.mode == "train", seed=int(spec.get("seed", 0)) + self.state["episodes"],
+            explore=self.mode == "train", seed=seed,
         )
         self.wandb = None
         if spec.get("wandb"):
             import wandb
 
-            run_id = self.state.get("wandb_id") or wandb.util.generate_id()
-            self.state["wandb_id"] = run_id
-            self.wandb = wandb.init(project=spec["wandb"]["project"], name=spec["wandb"].get("name"), id=run_id,
-                                    resume="allow", config={"mode": self.mode, **dataclasses.asdict(self.cfg)},
-                                    dir=str(self.dir))
+            self.wandb_id = self.wandb_id or wandb.util.generate_id()
+            self.wandb = wandb.init(project=spec["wandb"]["project"], name=spec["wandb"].get("name"),
+                                    id=self.wandb_id, resume="allow", dir=str(self.dir),
+                                    config={"mode": self.mode, "actor_start_episodes": self.actor_start,
+                                            **dataclasses.asdict(self.cfg)})
         self._episode: dict | None = None
 
     def act(self, observation: dict) -> Tensor:
@@ -443,26 +525,24 @@ class RLSession:
         if ep is None:
             return None
         n = ep["steps"]
-        row = {"episode": self.state["episodes"], "mode": self.mode, "steps": n,
+        row = {"episode": self.episodes, "mode": self.mode, "steps": n,
                "return": float(sum(ep["rewards"])),
                "mean_reward": float(np.mean(ep["rewards"])) if ep["rewards"] else float("nan"),
                "success": ep["success"], "early_stop": ep["early_stop"],
                "residual_abs": ep["mean_abs"] / max(n, 1), "noise_abs": ep["noise_abs"] / max(n, 1)}
+        self.episodes += 1
         if self.mode == "train":
             stored = self.buffer.end_episode()
+            if self.episodes >= self.cfg.warmup_episodes and len(self.buffer) > 0:
+                n_updates = max(1, int(round(self.cfg.utd * n)))
+                row.update(self.learner.update(self.buffer, n_updates, self.rng,
+                                               actor=self.episodes >= self.actor_start))
+            row["updates"] = self.learner.updates
+            self.learner.extra = {"episodes": self.episodes, "wandb_id": self.wandb_id}
+            self.learner.save(self.dir / "learner.pt")
             if stored is not None:
                 (self.dir / "buffer").mkdir(exist_ok=True)
-                self.buffer.save_episode(len(self.buffer.episodes) - 1,
-                                         self.dir / "buffer" / f"{self.state['episodes']:05d}.npz")
-            if self.state["episodes"] + 1 >= self.cfg.warmup_episodes and len(self.buffer) > 0:
-                n_updates = max(1, int(round(self.cfg.utd * n)))
-                row.update(self.learner.update(self.buffer, n_updates, self.rng))
-            row["updates"] = self.learner.updates
-            self.state["episodes"] += 1
-            self.learner.save(self.dir / "learner.pt")
-            (self.dir / "state.json").write_text(json.dumps(self.state))
-        else:
-            self.state["episodes"] += 1
+                self.buffer.save_episode(stored, self.dir / "buffer" / f"{self.episodes - 1:05d}.npz")
         with open(self.dir / "log.jsonl", "a") as f:
             f.write(json.dumps(row) + "\n")
         if self.wandb is not None:

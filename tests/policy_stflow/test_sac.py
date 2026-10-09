@@ -9,11 +9,12 @@ import torch
 stflow = pytest.importorskip("stflow")
 
 from stflow.config import ModelConfig  # noqa: E402
-from stflow.methods.sfp import SFPController  # noqa: E402
+from stflow.methods.sfp import SFPController, independent_query_mask  # noqa: E402
 from stflow.model.policy import FlowPolicy  # noqa: E402
 
 from policy.stflow.sac import (  # noqa: E402
-    SAC, ReplayBuffer, SACConfig, SACController, gaussian_log_prob, pooled_reading,
+    SAC, ReplayBuffer, SACConfig, SACController, gaussian_log_prob, observation_layers, pooled_reading,
+    query_velocity,
 )
 
 SIZE = 32
@@ -81,7 +82,8 @@ def test_records_carry_the_fast_residual_and_rewards_only_at_block_starts(model)
     assert [r["new_block"] for r in records] == [q % REFRESH == 0 for q in queries]
     for r in records:
         assert r["action"].shape == r["mean"].shape == r["v_slow"].shape == r["x"].shape == (A,)
-        assert r["hidden"].shape == (32,) and r["reading"] is None or r["reading"].shape == (2, 32)
+        assert r["hidden"].shape == (32,) and r["x_slow"].shape == (A,)
+        assert r["reading"] is None or r["reading"].shape == (2, 32)
 
 
 def test_the_reward_forecast_follows_the_slow_plan_not_the_fast_or_the_noise(model):
@@ -116,33 +118,57 @@ def test_pooled_reading_is_the_layer_normed_mean_over_each_fingertips_tokens(mod
 
 def fill(buffer, sac, episodes, steps):
     obs = observations(steps)
+    stored = []
     for _ in range(episodes):
         sac.reset()
         buffer.start_episode()
         with torch.no_grad():
             for o in obs:
                 buffer.add(sac.act(o)[1])
-        buffer.end_episode()
+        stored.append(buffer.end_episode())
+    return stored
+
+
+def test_query_velocity_on_cached_observation_layers_equals_the_full_expert(model):
+    obs = model.encode(observations(1)[0])
+    tactile = model.tactile_tokens(observations(1, seed=5)[0]["tactile"])
+    layers = observation_layers(model.expert, obs)
+    x = torch.randn(1, A)
+    mask = independent_query_mask(obs.shape[1], CHUNK)
+    with torch.no_grad():
+        for q in (0, 3, CHUNK - 1):
+            t = torch.full((1, CHUNK), q / CHUNK)
+            xx = x[:, None].expand(-1, CHUNK, -1)
+            for tac in (None, tactile):
+                full, hidden = model.expert(obs, xx, t, mask=mask, tactile=tac, return_hidden=True)
+                v, h = query_velocity(model.expert, layers, x, t[:, 0], torch.tensor([q]), tactile=tac)
+                assert torch.allclose(v, full[:, q], atol=1e-5) and torch.allclose(h, hidden[:, q], atol=1e-5)
 
 
 def test_buffer_puts_each_reward_on_the_step_before_and_never_samples_a_last_step(model, tmp_path):
     sac, _ = controller(model, explore=True)
     buffer = ReplayBuffer()
-    fill(buffer, sac, episodes=2, steps=2 * CHUNK + 1)
-    ep = buffer.episodes[0]
     n = 2 * CHUNK + 1
+    eps = fill(buffer, sac, episodes=2, steps=n)
+    ep = eps[0]
     assert len(ep["q"]) == n and ep["has_next"].tolist() == [True] * (n - 1) + [False]
     rewarded = [k for k in range(n) if ep["r"][k] != 0]
     assert rewarded == [k - 1 for k in range(n) if k % CHUNK % REFRESH == 0 and k % CHUNK > 0]
+    assert len(buffer) == 2 * (n - 1)
     rng = np.random.default_rng(0)
     for _ in range(20):
-        e, k = buffer.sample(8, rng)
-        assert all(buffer.episodes[i]["has_next"][j] for i, j in zip(e, k))
-    buffer.save_episode(0, tmp_path / "ep0.npz")
+        idx = buffer.sample(8, rng)
+        assert buffer.steps["has_next"].view()[idx].all()
+    # The second episode's table rows continue after the first's.
+    b = buffer.gather(np.array([n]), "cpu")
+    assert b["chunk"].item() == len(ep["obs"]) and torch.equal(b["obs"][0], torch.from_numpy(eps[1]["obs"][0]).float())
+    ReplayBuffer.save_episode(ep, tmp_path / "00000.npz")
+    ReplayBuffer.save_episode(eps[1], tmp_path / "00001.npz")
     loaded = ReplayBuffer()
-    loaded.load_dir(tmp_path)
-    for key, value in buffer.episodes[0].items():
-        assert np.array_equal(loaded.episodes[0][key], value), key
+    loaded.load_dir(tmp_path, limit=1)
+    assert loaded.n_episodes == 1 and len(loaded) == n - 1
+    for key in ("x", "r", "action", "q"):
+        assert np.array_equal(loaded.steps[key].view(), ep[key]), key
 
 
 def test_update_moves_the_adapters_and_the_critic_only(model):
@@ -153,6 +179,11 @@ def test_update_moves_the_adapters_and_the_critic_only(model):
     frozen = {n: p.detach().clone() for n, p in model.named_parameters() if not n.startswith("expert.adapters.")}
     adapters = {n: p.detach().clone() for n, p in model.named_parameters() if n.startswith("expert.adapters.")}
     critic = [p.detach().clone() for p in learner.critic.parameters()]
+    critic_only = learner.update(buffer, n_updates=2, rng=np.random.default_rng(1), actor=False)
+    assert "actor_loss" not in critic_only
+    for n, p in model.named_parameters():
+        if n in adapters:
+            assert torch.equal(p, adapters[n]), n
     stats = learner.update(buffer, n_updates=3, rng=np.random.default_rng(0))
     assert {"critic_loss", "actor_loss", "alpha", "q_mean", "entropy"} <= set(stats)
     assert all(np.isfinite(v) for v in stats.values())

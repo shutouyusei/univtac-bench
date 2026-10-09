@@ -379,7 +379,7 @@ def test_rl_training_learns_between_episodes_saves_and_resumes(tmp_path):
     trained = {n: p.detach().clone() for n, p in policy.model.expert.adapters.named_parameters()}
 
     resumed = make_policy(ckpt, stflow_rl=rl_spec(rl_dir))
-    assert resumed.rl.state["episodes"] == 2 and len(resumed.rl.buffer.episodes) == 2
+    assert resumed.rl.episodes == 2 and resumed.rl.buffer.n_episodes == 2
     for n, p in resumed.model.expert.adapters.named_parameters():
         assert torch.equal(p, trained[n]), n
 
