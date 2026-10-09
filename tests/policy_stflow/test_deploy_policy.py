@@ -271,3 +271,77 @@ def test_trace_records_the_prism_error_and_the_joints_of_every_step(ckpt):
     policy.eval(bare, obs)
     row = dict(zip(TRACE_COLUMNS, bare.metadata["trace"]["rows"][0]))
     assert np.isnan(row["prism_x"]) and np.isnan(row["inhand_slip"]) and row["joint_3"] == 3.0
+
+
+def prediction_ckpt(tmp_path, tactile_prediction=True):
+    if "tactile_prediction" not in {f.name for f in dataclasses.fields(ModelConfig)}:
+        pytest.skip("this stflow has no tactile prediction")
+    model = ModelConfig(
+        image_size=SIZE, pretrained_backbone=False, d_model=32, n_heads=4, n_layers=1, dim_feedforward=64,
+        dropout=0.0, chunk_size=CHUNK, tactile_adapter=True, tactile_prediction=tactile_prediction,
+        slow_tactile=True,
+    )
+    torch.manual_seed(0)
+    policy = FlowPolicy(model)
+    for adapter in policy.expert.adapters:  # zero-initialised gates would hide whether the adapters leak in
+        for p in adapter.parameters():
+            torch.nn.init.normal_(p, std=0.5)
+    args = {"n_action_steps": CHUNK, "tactile_refresh": 2}
+    return checkpoint.save(tmp_path / "ckpt", policy, Config(model=model, method=MethodConfig(name="sfp", args=args)))
+
+
+def task_with_seed(seed):
+    task = FakeTask()
+    task.metadata, task.take_action_cnt = {}, 0
+    task.cfg = type("Cfg", (), {"seed": seed})()
+    return task
+
+
+def test_prediction_log_records_the_slow_sides_tactile_read_out_and_the_reading(tmp_path):
+    import torch.nn.functional as F
+    from stflow.methods.sfp import independent_query_mask
+
+    log = tmp_path / "log"
+    policy = make_policy(prediction_ckpt(tmp_path), stflow_prediction_log={"dir": str(log), "frames_every": 2})
+    rng = np.random.default_rng(12)
+    task = task_with_seed(1000003)
+    observations = [observation(rng) for _ in range(CHUNK + 1)]
+    for obs in observations:
+        task.take_action_cnt += 1
+        policy.eval(task, obs)
+    policy.reset()  # the episode's file is written when the next one starts
+    rec = np.load(log / "1000003.npz")
+    n = CHUNK + 1
+    assert rec["query"].tolist() == [0, 1, 2, 3, 4, 5, 0] and rec["action_count"].tolist() == list(range(1, n + 1))
+    names = policy.cfg.tactile_names
+    assert rec["predicted"].shape == rec["reading"].shape == (n, len(names), 32)
+    model = policy.model
+    with torch.no_grad():
+        # Query 0 of the first chunk: the slow side (no adapters) at the measured joint state, t = 0.
+        enc = policy.encode_obs(observations[0])
+        obs_tokens = model.encode(enc)
+        x = model.normalizer.action(enc["state"][:, :8])[:, None].expand(-1, CHUNK, -1)
+        mask = independent_query_mask(obs_tokens.shape[1], CHUNK)
+        _, hidden = model.expert(obs_tokens, x, torch.zeros(1, CHUNK), mask=mask, return_hidden=True)
+        predicted = model.tactile_predictor(hidden[:, 0]).view(len(names), 32)
+        tokens = model.tactile_tokens(policy.encode_obs(observations[3])["tactile"])
+        reading = F.layer_norm(tokens.view(1, len(names), -1, 32).mean(2), (32,))[0]
+    assert np.allclose(rec["predicted"][0], predicted.numpy(), atol=2e-3)
+    assert np.allclose(rec["reading"][3], reading.numpy(), atol=2e-3)
+    # The policy's own fingertip input frames, every frames_every steps.
+    assert rec["frame_steps"].tolist() == [0, 2, 4, 6]
+    for name in names:
+        frames = rec[f"frames_{name}"]
+        assert frames.shape == (4, SIZE, SIZE, 3) and frames.dtype == np.uint8
+        live = policy.encode_obs(observations[2])["tactile"][name][0]
+        assert np.array_equal(frames[1], (live * 255).round().byte().permute(1, 2, 0).numpy())
+
+
+def test_prediction_log_is_off_by_default_and_needs_a_predicting_model(tmp_path):
+    policy = make_policy(prediction_ckpt(tmp_path))
+    policy.eval(task_with_seed(5), observation(np.random.default_rng(13)))
+    policy.reset()
+    assert not list(tmp_path.glob("**/*.npz"))
+    with pytest.raises(ValueError, match="tactile_prediction"):
+        make_policy(prediction_ckpt(tmp_path / "other", tactile_prediction=False),
+                    stflow_prediction_log={"dir": str(tmp_path / "log")})

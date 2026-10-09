@@ -31,6 +31,11 @@ deploy yml keys:
                                measured joints and, for tasks with a held prism and a target pose, the
                                prism's pose error in the target frame and its slip in the hand, read from
                                the simulator state the policy does not see
+* ``stflow_prediction_log``    default off; ``{dir: <path>, frames_every: N}`` for a checkpoint whose model has
+                               ``tactile_prediction``: one ``<dir>/<seed>.npz`` per episode (see
+                               ``PredictionLog``) with, every step, the slow side's tactile read-out for the
+                               query just executed and the pooled reading of the fingertips, plus the
+                               policy's fingertip input frames every ``N`` steps (default 5)
 """
 
 from __future__ import annotations
@@ -106,6 +111,76 @@ def trace_row(task, joint: np.ndarray, action: np.ndarray) -> list[float]:
     return [round(v, 5) for v in row]
 
 
+class PredictionLog:
+    """What the slow side of a ``tactile_prediction`` model expects the fingertips to read, next to what they
+    read, step by step.
+
+    A forward pre-hook keeps the arguments of the controller's last expert call. After each step the same
+    call is repeated without tactile (the slow side, as in training) and the read-out of the executed
+    query's action token is ``predicted``: training teaches query ``i`` the reading of the first frame of
+    its block, from the chunk start's observation. ``reading`` is the current fingertips' tokens, mean-pooled
+    per fingertip and layer-normed: the space the read-out was trained in. ``query`` is the executed query
+    (the step inside the chunk); ``action_count`` the task's action counter. A file is written when the next
+    episode starts and when the policy closes."""
+
+    def __init__(self, model, directory: Path, frames_every: int = 5):
+        if getattr(model, "tactile_predictor", None) is None:
+            raise ValueError("stflow_prediction_log needs a checkpoint whose model has tactile_prediction")
+        self.model = model
+        self.dir = Path(directory)
+        self.frames_every = int(frames_every)
+        self.last_call = None
+        model.expert.register_forward_pre_hook(self._keep, with_kwargs=True)
+        self.clear()
+
+    def _keep(self, module, args, kwargs):
+        self.last_call = (args, kwargs)
+
+    def clear(self) -> None:
+        self.seed = None
+        self.rows = {"query": [], "action_count": [], "predicted": [], "reading": []}
+        self.frames: dict[str, list] = {}
+        self.frame_steps: list[int] = []
+
+    def record(self, task, obs: dict) -> None:
+        import torch.nn.functional as F
+
+        model = self.model
+        (obs_tokens, x, t), kwargs = self.last_call[0][:3], self.last_call[1]
+        horizon = x.shape[1]
+        query = int(round(float(t[0, 0]) * horizon))
+        _, hidden = model.expert(obs_tokens, x, t, mask=kwargs.get("mask"), return_hidden=True)
+        names = model.tactile.names
+        d = hidden.shape[-1]
+        tokens = model.tactile_tokens(obs["tactile"])
+        reading = F.layer_norm(tokens.view(1, len(names), -1, d).mean(2).float(), (d,))[0]
+        self.seed = int(task.cfg.seed)
+        step = len(self.rows["query"])
+        self.rows["query"].append(query)
+        self.rows["action_count"].append(int(task.take_action_cnt))
+        self.rows["predicted"].append(model.tactile_predictor(hidden[:, query]).float().view(len(names), d).cpu())
+        self.rows["reading"].append(reading.cpu())
+        if step % self.frames_every == 0:
+            self.frame_steps.append(step)
+            for name in names:
+                frame = (obs["tactile"][name][0] * 255).round().byte().permute(1, 2, 0).cpu().numpy()
+                self.frames.setdefault(name, []).append(frame)
+
+    def flush(self) -> None:
+        if self.seed is not None and self.rows["query"]:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            arrays = {
+                "query": np.asarray(self.rows["query"], dtype=np.int32),
+                "action_count": np.asarray(self.rows["action_count"], dtype=np.int64),
+                "predicted": torch.stack(self.rows["predicted"]).numpy().astype(np.float16),
+                "reading": torch.stack(self.rows["reading"]).numpy().astype(np.float16),
+                "frame_steps": np.asarray(self.frame_steps, dtype=np.int32),
+                **{f"frames_{name}": np.stack(frames) for name, frames in self.frames.items()},
+            }
+            np.savez_compressed(self.dir / f"{self.seed}.npz", **arrays)
+        self.clear()
+
+
 class Policy(BasePolicy):
     def __init__(self, args: dict):
         from stflow import checkpoint
@@ -124,6 +199,10 @@ class Policy(BasePolicy):
         self.controller = build_method(cfg.method.name, method_args).controller(self.model, seed=int(args.get("seed", 0)))
         self.jpeg = bool(args.get("stflow_jpeg_roundtrip", True))
         self.trace = bool(args.get("stflow_trace", False))
+        log = args.get("stflow_prediction_log")
+        self.prediction_log = None
+        if log:
+            self.prediction_log = PredictionLog(self.model, Path(log["dir"]).expanduser(), log.get("frames_every", 5))
         # Checkpoints from before tactile targets have no such field and never read the marker observation.
         self.markers = getattr(self.cfg, "tactile_target", "none") == "marker" and bool(self.cfg.tactile_names)
         print(f"stflow policy from {ckpt}: method {cfg.method.name} {method_args}")
@@ -166,6 +245,8 @@ class Policy(BasePolicy):
         with torch.inference_mode():
             obs = self.encode_obs(observation)
             action = self.controller.act(obs).to(task.device).float()
+            if self.prediction_log is not None:
+                self.prediction_log.record(task, obs)
         if self.trace:
             # ``task.metadata`` is cleared at every episode reset and written by the task at its end.
             trace = task.metadata.setdefault("trace", {"columns": TRACE_COLUMNS, "rows": []})
@@ -176,6 +257,9 @@ class Policy(BasePolicy):
         """Called before every episode; the controller drops what it carries and restarts its noise
         stream, so an episode depends on its own observations only."""
         self.controller.reset()
+        if self.prediction_log is not None:
+            self.prediction_log.flush()
 
     def close(self):
-        pass
+        if self.prediction_log is not None:
+            self.prediction_log.flush()
