@@ -50,6 +50,9 @@ class SACConfig:
     init_alpha: float = 0.01
     hidden: int = 512
     grad_clip: float = 1.0
+    # Weight of mean(((mu - mu_IL) / scale)^2) in the actor loss, mu_IL from a frozen copy of the starting
+    # adapters: keeps the fast near its imitation where the critic knows nothing (0 = plain SAC).
+    bc_weight: float = 0.0
 
 
 def pooled_reading(policy, tokens: Tensor) -> Tensor:
@@ -75,22 +78,24 @@ def observation_layers(expert, obs_tokens: Tensor) -> Tensor:
 
 
 def query_velocity(expert, obs_layers: Tensor, x: Tensor, t: Tensor, q: Tensor, tactile: Tensor | None = None,
-                   tactile_scale: float = 1.0) -> tuple[Tensor, Tensor]:
+                   tactile_scale: float = 1.0, adapters=None) -> tuple[Tensor, Tensor]:
     """Velocity ``(B, A)`` and action token ``(B, d)`` of query ``q`` ``(B,)`` at action ``x`` ``(B, A)`` and time
     ``t`` ``(B,)``: ``expert(obs, x, t, mask=independent_query_mask, tactile)[:, q]`` computed on that one token
-    against the cached ``observation_layers`` (the query attends to the observations and itself only)."""
+    against the cached ``observation_layers`` (the query attends to the observations and itself only).
+    ``adapters`` replaces ``expert.adapters`` (e.g. a frozen copy of the imitation's)."""
     from stflow.model.expert import sinusoidal_time_embedding
 
     time_emb = sinusoidal_time_embedding(t, expert.d_model).to(x.dtype)
     z = expert.action_time_mlp(torch.cat([expert.action_in(x), time_emb], dim=-1)) + expert.action_pos[q]
     z = z[:, None]
     read = tactile is not None and tactile_scale != 0
+    adapters = expert.adapters if adapters is None else adapters
     for i, layer in enumerate(expert.transformer.layers):
         n1 = layer.norm1(torch.cat([obs_layers[:, i].to(z.dtype), z], dim=1))
         z = z + layer.self_attn(n1[:, -1:], n1, n1, need_weights=False)[0]
         z = z + layer._ff_block(layer.norm2(z))
         if read:
-            z = z + tactile_scale * expert.adapters[i](z, tactile)
+            z = z + tactile_scale * adapters[i](z, tactile)
     hidden = expert.norm(z)[:, 0]
     return expert.action_out(hidden), hidden
 
@@ -337,6 +342,8 @@ class SAC:
         self.alpha_opt = torch.optim.Adam([self.log_alpha], lr=cfg.alpha_lr)
         self.updates = 0
         self.extra: dict = {}
+        # The imitation's adapters, the anchor of the bc term and of the logged drift.
+        self.reference = copy.deepcopy(policy.expert.adapters).requires_grad_(False)
 
     @torch.no_grad()
     def obs_layers(self, *batches: dict) -> None:
@@ -352,10 +359,10 @@ class SAC:
             b["obs_layers"] = layers[start: start + len(b["chunk"])]
             start += len(b["chunk"])
 
-    def actor_mean(self, b: dict) -> Tensor:
+    def actor_mean(self, b: dict, reference: bool = False) -> Tensor:
         horizon = self.policy.cfg.chunk_size
         v_full, _ = query_velocity(self.policy.expert, b["obs_layers"], b["x"], b["q"].float() / horizon, b["q"],
-                                   tactile=b["tac"])
+                                   tactile=b["tac"], adapters=self.reference if reference else None)
         return v_full.float() - b["v_slow"]
 
     def critic_state(self, b: dict) -> Tensor:
@@ -395,7 +402,10 @@ class SAC:
                 a = mean + std * torch.randn_like(mean)
                 logp = gaussian_log_prob(a, mean, self.log_std)
                 nq1, nq2 = self.critic(state, a / self.scale)
-                actor_loss = (alpha * logp - torch.min(nq1, nq2)).mean()
+                with torch.no_grad():
+                    imitation = self.actor_mean(b, reference=True)
+                drift = ((mean - imitation) / self.scale).pow(2).mean()
+                actor_loss = (alpha * logp - torch.min(nq1, nq2)).mean() + cfg.bc_weight * drift
                 self.actor_opt.zero_grad()
                 actor_loss.backward()
                 params = [p for g in self.actor_opt.param_groups for p in g["params"]]
@@ -408,7 +418,7 @@ class SAC:
                 alpha_loss.backward()
                 self.alpha_opt.step()
                 step_stats.update({"actor_loss": actor_loss.item(), "entropy": -logp.mean().item(),
-                                   "mean_abs": mean.abs().mean().item()})
+                                   "mean_abs": mean.abs().mean().item(), "drift": drift.item()})
 
             with torch.no_grad():
                 for p, tp in zip(self.critic.parameters(), self.target.parameters()):
@@ -426,7 +436,7 @@ class SAC:
             "critic": self.critic.state_dict(), "target": self.target.state_dict(),
             "log_alpha": self.log_alpha.detach(), "actor_opt": self.actor_opt.state_dict(),
             "critic_opt": self.critic_opt.state_dict(), "alpha_opt": self.alpha_opt.state_dict(),
-            "updates": self.updates, "extra": self.extra,
+            "updates": self.updates, "extra": self.extra, "reference": self.reference.state_dict(),
         }, tmp)
         tmp.replace(path)
 
@@ -443,6 +453,8 @@ class SAC:
         self.alpha_opt.load_state_dict(state["alpha_opt"])
         self.updates = state["updates"]
         self.extra = dict(state.get("extra", {}))
+        if "reference" in state:
+            self.reference.load_state_dict(state["reference"])
 
 
 class RLSession:

@@ -185,7 +185,10 @@ def test_update_moves_the_adapters_and_the_critic_only(model):
         if n in adapters:
             assert torch.equal(p, adapters[n]), n
     stats = learner.update(buffer, n_updates=3, rng=np.random.default_rng(0))
-    assert {"critic_loss", "actor_loss", "alpha", "q_mean", "entropy"} <= set(stats)
+    assert {"critic_loss", "actor_loss", "alpha", "q_mean", "entropy", "drift"} <= set(stats)
+    # The imitation anchor stays at the starting adapters.
+    for n, p in learner.reference.named_parameters():
+        assert torch.equal(p, adapters[f"expert.adapters.{n}"]), n
     assert all(np.isfinite(v) for v in stats.values())
     for n, p in model.named_parameters():
         if n in frozen:
@@ -207,3 +210,17 @@ def test_learner_state_round_trips(model, tmp_path):
     for (n, p), q in zip(model.expert.adapters.named_parameters(), other_model.expert.adapters.parameters()):
         assert torch.equal(p, q), n
     assert torch.equal(learner.log_std, other.log_std) and learner.updates == other.updates
+    for p, q in zip(learner.reference.parameters(), other.reference.parameters()):
+        assert torch.equal(p, q)
+
+
+def test_a_large_bc_weight_keeps_the_fast_at_its_imitation(model):
+    sac, learner = controller(model, explore=True, cfg=sac_config(bc_weight=1e4, actor_lr=1e-3))
+    buffer = ReplayBuffer()
+    fill(buffer, sac, episodes=1, steps=2 * CHUNK + 1)
+    free_sac, free = controller(FlowPolicy(model.cfg).eval(), explore=True, cfg=sac_config(actor_lr=1e-3))
+    free.policy.load_state_dict(model.state_dict())
+    free.reference.load_state_dict(model.expert.adapters.state_dict())
+    anchored = learner.update(buffer, n_updates=5, rng=np.random.default_rng(0))
+    plain = free.update(buffer, n_updates=5, rng=np.random.default_rng(0))
+    assert anchored["drift"] < 0.1 * plain["drift"]
