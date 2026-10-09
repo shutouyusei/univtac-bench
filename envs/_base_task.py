@@ -234,6 +234,10 @@ class BaseTask(UipcRLEnv):
 
         self.mode = mode
         self.first_frame = None
+        # Called after every control step of take_dense_action when set; returning True stops the rest of the
+        # current motion and sets dense_action_stopped.
+        self.dense_action_monitor = None
+        self.dense_action_stopped = False
         
         self.start_time = 0.0
         self.step_count = 0
@@ -987,6 +991,7 @@ class BaseTask(UipcRLEnv):
 
         arm_steps = arm_seq['num_steps'] if arm_seq is not None else 0
         gripper_steps = gripper_seq['num_steps'] if gripper_seq is not None else 0
+        self.dense_action_stopped = False
 
         if gripper_steps == -1: # adaptive grasp
             idx, gripper_active = 0, True
@@ -1006,6 +1011,9 @@ class BaseTask(UipcRLEnv):
                     self._robot_manager.set_gripper(pos, vel, force=force)
                 self._step(is_save)
                 idx += 1
+                if self.dense_action_monitor is not None and self.dense_action_monitor():
+                    self.dense_action_stopped = True
+                    break
         else:
             max_control_len = max(arm_steps, gripper_steps)
             for idx in range(max_control_len):
@@ -1022,6 +1030,9 @@ class BaseTask(UipcRLEnv):
                         force=force,
                     )
                 self._step(is_save)
+                if self.dense_action_monitor is not None and self.dense_action_monitor():
+                    self.dense_action_stopped = True
+                    break
         return True
 
     def check_early_stop(self):
