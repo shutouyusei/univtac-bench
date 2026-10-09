@@ -36,6 +36,10 @@ deploy yml keys:
                                ``PredictionLog``) with, every step, the slow side's tactile read-out for the
                                query just executed and the pooled reading of the fingertips, plus the
                                policy's fingertip input frames every ``N`` steps (default 5)
+* ``stflow_rl``                default off; ``{dir, mode: train|eval, config: {SACConfig fields}, seed, load,
+                               wandb: {project, name}}``: SAC on the fast side of a slow-fast SFP checkpoint,
+                               rewarded by agreement with the slow side's tactile forecast (``policy/stflow/sac.py``,
+                               ``RLSession``); learns between episodes and resumes from ``dir``
 """
 
 from __future__ import annotations
@@ -203,6 +207,13 @@ class Policy(BasePolicy):
         self.prediction_log = None
         if log:
             self.prediction_log = PredictionLog(self.model, Path(log["dir"]).expanduser(), log.get("frames_every", 5))
+        self.rl = None
+        if args.get("stflow_rl"):
+            from policy.stflow.sac import RLSession
+
+            if self.prediction_log is not None:
+                raise ValueError("stflow_rl and stflow_prediction_log cannot be combined (the RL log has the reward)")
+            self.rl = RLSession(self.model, method_args, args["stflow_rl"])
         # Checkpoints from before tactile targets have no such field and never read the marker observation.
         self.markers = getattr(self.cfg, "tactile_target", "none") == "marker" and bool(self.cfg.tactile_names)
         print(f"stflow policy from {ckpt}: method {cfg.method.name} {method_args}")
@@ -244,22 +255,32 @@ class Policy(BasePolicy):
         # Controllers may call the policy's encoder and expert directly; no graph is ever needed here.
         with torch.inference_mode():
             obs = self.encode_obs(observation)
-            action = self.controller.act(obs).to(task.device).float()
+            controller = self.rl if self.rl is not None else self.controller
+            action = controller.act(obs).to(task.device).float()
             if self.prediction_log is not None:
                 self.prediction_log.record(task, obs)
         if self.trace:
             # ``task.metadata`` is cleared at every episode reset and written by the task at its end.
             trace = task.metadata.setdefault("trace", {"columns": TRACE_COLUMNS, "rows": []})
             trace["rows"].append(trace_row(task, obs["state"][0].cpu().numpy(), action.cpu().numpy()))
-        return task.take_action(action, action_type="qpos")
+        result = task.take_action(action, action_type="qpos")
+        if self.rl is not None:
+            early_stop = task.check_early_stop() if hasattr(task, "check_early_stop") else False
+            self.rl.observe(getattr(task, "eval_success", False), early_stop)
+        return result
 
     def reset(self):
         """Called before every episode; the controller drops what it carries and restarts its noise
-        stream, so an episode depends on its own observations only."""
+        stream, so an episode depends on its own observations only. Under ``stflow_rl`` the episode
+        before is stored and learnt from here, outside inference mode."""
         self.controller.reset()
         if self.prediction_log is not None:
             self.prediction_log.flush()
+        if self.rl is not None:
+            self.rl.end_episode()
 
     def close(self):
         if self.prediction_log is not None:
             self.prediction_log.flush()
+        if self.rl is not None:
+            self.rl.close()

@@ -17,6 +17,8 @@ would pay the policy for ending early, e.g. by dropping the peg.
 from __future__ import annotations
 
 import copy
+import dataclasses
+import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -364,3 +366,110 @@ class SAC:
         self.critic_opt.load_state_dict(state["critic_opt"])
         self.alpha_opt.load_state_dict(state["alpha_opt"])
         self.updates = state["updates"]
+
+
+class RLSession:
+    """One SAC run inside the evaluation loop, everything under ``spec["dir"]``:
+
+    * ``mode: train``: explores, stores every episode in ``buffer/<n>.npz``, and after each episode (from
+      ``warmup_episodes`` on) runs ``utd`` updates per stored step, then saves ``learner.pt`` and ``state.json``.
+      A new session in the same directory resumes from them (the buffer is reloaded), so a crashed simulator
+      process loses at most the episode it was in.
+    * ``mode: eval``: no exploration and no learning; loads ``spec["load"]`` (a ``learner.pt``) if given, else
+      runs the checkpoint's own adapters.
+
+    Every episode appends one line to ``log.jsonl`` (return, mean block reward, success, early stop, steps,
+    residual sizes and, in training, the update statistics) and, with ``spec["wandb"] = {project, name}``, logs
+    the same to Weights & Biases (resumed with the run id kept in ``state.json``)."""
+
+    def __init__(self, policy, method_args: dict, spec: dict):
+        self.dir = Path(spec["dir"]).expanduser()
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.mode = spec.get("mode", "train")
+        if self.mode not in ("train", "eval"):
+            raise ValueError(f"stflow_rl mode must be 'train' or 'eval', got {self.mode!r}")
+        self.cfg = SACConfig(**spec["config"])
+        self.learner = SAC(policy, self.cfg)
+        self.buffer = ReplayBuffer()
+        state_path = self.dir / "state.json"
+        self.state = {"episodes": 0, "wandb_id": None}
+        if self.mode == "train" and (self.dir / "learner.pt").exists():
+            self.learner.load(self.dir / "learner.pt")
+            self.buffer.load_dir(self.dir / "buffer")
+            self.state.update(json.loads(state_path.read_text()))
+        elif spec.get("load"):
+            self.learner.load(Path(spec["load"]).expanduser())
+        self.rng = np.random.default_rng(int(spec.get("seed", 0)) + self.state["episodes"])
+        self.controller = SACController(
+            policy, self.learner, int(method_args["n_action_steps"]), int(method_args["tactile_refresh"]),
+            explore=self.mode == "train", seed=int(spec.get("seed", 0)) + self.state["episodes"],
+        )
+        self.wandb = None
+        if spec.get("wandb"):
+            import wandb
+
+            run_id = self.state.get("wandb_id") or wandb.util.generate_id()
+            self.state["wandb_id"] = run_id
+            self.wandb = wandb.init(project=spec["wandb"]["project"], name=spec["wandb"].get("name"), id=run_id,
+                                    resume="allow", config={"mode": self.mode, **dataclasses.asdict(self.cfg)},
+                                    dir=str(self.dir))
+        self._episode: dict | None = None
+
+    def act(self, observation: dict) -> Tensor:
+        if self._episode is None:
+            self._episode = {"rewards": [], "steps": 0, "mean_abs": 0.0, "noise_abs": 0.0,
+                             "success": False, "early_stop": False}
+            if self.mode == "train":
+                self.buffer.start_episode()
+        action, record = self.controller.act(observation)
+        ep = self._episode
+        if record["reward"] is not None:
+            ep["rewards"].append(record["reward"])
+        ep["steps"] += 1
+        ep["mean_abs"] += float(np.abs(record["mean"]).mean())
+        ep["noise_abs"] += float(np.abs(record["action"] - record["mean"]).mean())
+        if self.mode == "train":
+            self.buffer.add(record)
+        return action
+
+    def observe(self, success: bool, early_stop: bool) -> None:
+        if self._episode is not None:
+            self._episode["success"] |= bool(success)
+            self._episode["early_stop"] |= bool(early_stop)
+
+    def end_episode(self) -> dict | None:
+        ep, self._episode = self._episode, None
+        self.controller.reset()
+        if ep is None:
+            return None
+        n = ep["steps"]
+        row = {"episode": self.state["episodes"], "mode": self.mode, "steps": n,
+               "return": float(sum(ep["rewards"])),
+               "mean_reward": float(np.mean(ep["rewards"])) if ep["rewards"] else float("nan"),
+               "success": ep["success"], "early_stop": ep["early_stop"],
+               "residual_abs": ep["mean_abs"] / max(n, 1), "noise_abs": ep["noise_abs"] / max(n, 1)}
+        if self.mode == "train":
+            stored = self.buffer.end_episode()
+            if stored is not None:
+                (self.dir / "buffer").mkdir(exist_ok=True)
+                self.buffer.save_episode(len(self.buffer.episodes) - 1,
+                                         self.dir / "buffer" / f"{self.state['episodes']:05d}.npz")
+            if self.state["episodes"] + 1 >= self.cfg.warmup_episodes and len(self.buffer) > 0:
+                n_updates = max(1, int(round(self.cfg.utd * n)))
+                row.update(self.learner.update(self.buffer, n_updates, self.rng))
+            row["updates"] = self.learner.updates
+            self.state["episodes"] += 1
+            self.learner.save(self.dir / "learner.pt")
+            (self.dir / "state.json").write_text(json.dumps(self.state))
+        else:
+            self.state["episodes"] += 1
+        with open(self.dir / "log.jsonl", "a") as f:
+            f.write(json.dumps(row) + "\n")
+        if self.wandb is not None:
+            self.wandb.log({k: v for k, v in row.items() if k != "mode"}, step=row["episode"])
+        return row
+
+    def close(self) -> None:
+        self.end_episode()
+        if self.wandb is not None:
+            self.wandb.finish()

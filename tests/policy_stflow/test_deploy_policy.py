@@ -345,3 +345,51 @@ def test_prediction_log_is_off_by_default_and_needs_a_predicting_model(tmp_path)
     with pytest.raises(ValueError, match="tactile_prediction"):
         make_policy(prediction_ckpt(tmp_path / "other", tactile_prediction=False),
                     stflow_prediction_log={"dir": str(tmp_path / "log")})
+
+
+def rl_spec(directory, mode="train", **extra):
+    return {"dir": str(directory), "mode": mode, "seed": 3,
+            "config": {"scale": [0.5] * 8, "batch_size": 4, "warmup_episodes": 1, "hidden": 16}, **extra}
+
+
+def run_episodes(policy, episodes, steps, seed=20):
+    rng = np.random.default_rng(seed)
+    task = task_with_seed(0)
+    for _ in range(episodes):
+        policy.reset()
+        for _ in range(steps):
+            policy.eval(task, observation(rng))
+    policy.close()
+    return task.actions
+
+
+def test_rl_training_learns_between_episodes_saves_and_resumes(tmp_path):
+    import json
+
+    ckpt = prediction_ckpt(tmp_path)
+    rl_dir = tmp_path / "rl"
+    policy = make_policy(ckpt, stflow_rl=rl_spec(rl_dir))
+    before = {n: p.detach().clone() for n, p in policy.model.expert.adapters.named_parameters()}
+    run_episodes(policy, episodes=2, steps=CHUNK + 2)
+    assert sorted(p.name for p in (rl_dir / "buffer").glob("*.npz")) == ["00000.npz", "00001.npz"]
+    rows = [json.loads(line) for line in (rl_dir / "log.jsonl").read_text().splitlines()]
+    assert [r["episode"] for r in rows] == [0, 1] and all(r["steps"] == CHUNK + 2 for r in rows)
+    assert rows[-1]["updates"] > 0 and "critic_loss" in rows[-1]
+    assert any(not torch.equal(p, before[n]) for n, p in policy.model.expert.adapters.named_parameters())
+    trained = {n: p.detach().clone() for n, p in policy.model.expert.adapters.named_parameters()}
+
+    resumed = make_policy(ckpt, stflow_rl=rl_spec(rl_dir))
+    assert resumed.rl.state["episodes"] == 2 and len(resumed.rl.buffer.episodes) == 2
+    for n, p in resumed.model.expert.adapters.named_parameters():
+        assert torch.equal(p, trained[n]), n
+
+
+def test_rl_eval_mode_acts_like_the_plain_policy_and_learns_nothing(tmp_path):
+    ckpt = prediction_ckpt(tmp_path)
+    plain = run_episodes(make_policy(ckpt), episodes=1, steps=CHUNK + 2)
+    policy = make_policy(ckpt, stflow_rl=rl_spec(tmp_path / "rl_eval", mode="eval"))
+    rl = run_episodes(policy, episodes=1, steps=CHUNK + 2)
+    assert len(plain) == len(rl) == CHUNK + 2
+    assert all(torch.allclose(a, b, atol=1e-5) for a, b in zip(plain, rl))
+    assert not (tmp_path / "rl_eval" / "buffer").exists() and not (tmp_path / "rl_eval" / "learner.pt").exists()
+    assert len((tmp_path / "rl_eval" / "log.jsonl").read_text().splitlines()) == 1
