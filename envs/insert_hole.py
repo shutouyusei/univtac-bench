@@ -11,8 +11,8 @@ class TaskCfg(BaseTaskCfg):
     monitor_push: bool = False
     # With monitor_push: stop the push once the change exceeds this many pixels (0 = never stop).
     contact_trigger_px: float = 0.0
-    # After a stop: back off retract metres along the prism axis, re-align from the privileged pose, and push
-    # to the original depth.
+    # After a stop: back off retract metres along the prism axis (0 = re-align in place), re-align from the
+    # privileged pose, and push to the original depth.
     correct_on_trigger: bool = False
     retract: float = 0.01
 
@@ -109,9 +109,10 @@ class Task(BaseTask):
         if self.dense_action_stopped and self.cfg.correct_on_trigger:
             pushed = float(np.dot(np.asarray(self._robot_manager.get_gripper_center_pose()[:3]) - start, axis))
             self.metadata['stopped_after_m'] = pushed
-            self.move(self.atom.move_by_displacement(
-                z=self.cfg.retract, xyz_coord=self.prism.get_pose()
-            ), time_dilation_factor=0.5)
+            if self.cfg.retract > 0.0:
+                self.move(self.atom.move_by_displacement(
+                    z=self.cfg.retract, xyz_coord=self.prism.get_pose()
+                ), time_dilation_factor=0.5)
             self._align(0.0)
             self._push(0.04 - pushed + self.cfg.retract, monitor=False)
             self.metadata['corrected'] = True
