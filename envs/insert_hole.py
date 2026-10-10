@@ -113,10 +113,14 @@ class Task(BaseTask):
                 self.move(self.atom.move_by_displacement(
                     z=self.cfg.retract, xyz_coord=self.prism.get_pose()
                 ), time_dilation_factor=0.5)
+            self._before_correction()
             self._align(0.0)
             self._push(0.04 - pushed + self.cfg.retract, monitor=False)
             self.metadata['corrected'] = True
         self.delay(20, is_save=False)
+
+    def _before_correction(self):
+        """Hook run after a tactile-triggered stop and before the privileged re-alignment (no-op here)."""
 
     def _tilt_error(self) -> float:
         low, high = self.cfg.tilt_error_deg

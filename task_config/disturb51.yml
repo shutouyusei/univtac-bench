@@ -1,0 +1,43 @@
+env_settings:
+  frequencies:
+    physical: 120
+    collect: 120
+    save: 60
+    video: 60
+    eval: 60
+    render: 0
+
+  random_texture: false
+  sensor_type: gsmini
+  optical_backend: taxim
+
+collect_settings:
+  save_root_dir: data
+  use_seed: true
+  episode_num: 110
+
+replay_settings:
+  save_root_dir: eval_result
+  force_action: false
+  max_episodes: 110
+
+observation_settings:
+  camera: ['rgb']
+  tactile: ['rgb', 'rgb_marker', 'marker', 'depth', 'press_depth', 'pose']
+  embodiment: ['joint', 'ee']
+  actor: true
+
+# insert_hole_disturb (envs/insert_hole_disturb.py) with the reactive expert: the slot moves 4 mm at a random
+# physics step 240-320 after the pre-move (inside the expert's push); the push stops when the marker field moves
+# 12 px RMS from its start and the prism is re-aligned in place from the slot's current privileged pose. The
+# non-reactive expert is the same config with correct_on_trigger=false (monitor_push may stay on for the trace).
+task_overrides:
+  tilt_error_deg: [0.0, 0.0]
+  monitor_push: true
+  contact_trigger_px: 12.0
+  correct_on_trigger: true
+  retract: 0.0
+  shift_prob: 1.0
+  shift_window: [240, 320]
+  shift_distance: [0.004, 0.004]
+  shift_speed: 0.00025
