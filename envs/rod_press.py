@@ -33,8 +33,9 @@ class Task(BaseTask):
         super().__init__(cfg, mode, render_mode, **kwargs)
 
     def create_actors(self):
-        # Rod and stand are insert_hole's test tube on its base; the board is a 10 cm kinematic cube whose top
-        # face (z = 0.101) is the pressing surface.
+        # Rod and stand are insert_hole's test tube on its base. The board is the 5 x 5 x 1 cm pad of
+        # grasp_classify, the one plain closed box among the assets (the base, stand and slot cubes all have a
+        # socket in the top face that would swallow the tip); kinematic, so it can float at 5 cm.
         self.rod_base = self._actor_manager.add_from_usd_file(
             name='rod_base',
             asset_path="TestTubeBase.usd",
@@ -47,14 +48,16 @@ class Task(BaseTask):
             pose=Pose([0.4, 0.0, 0.003], [1, 0, 0, 0]),
             density=10,
         )
-        self.board_origin = Pose([0.6, 0.0, 0.001], [1, 0, 0, 0])
+        # Floating well clear of libuipc's ground plane (ground_height 0.001): a kinematic face that reaches the
+        # ground makes the contact energy NaN.
+        self.board_origin = Pose([0.6, 0.0, 0.05], [1, 0, 0, 0])
         self.board = self._actor_manager.add_from_usd_file(
             name='board',
-            asset_path="Stand.usd",
+            asset_path="GreenPad.usd",
             pose=self.board_origin,
             motion_type="kinematic",
         )
-        self.board_top = self.board_origin.p[2] + 0.1
+        self.board_top = self.board_origin.p[2] + 0.01
 
     def _reset_actors(self):
         self.board.set_pose(self.board_origin)
