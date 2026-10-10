@@ -54,7 +54,7 @@ class Task(InsertHoleTask):
     # -- the disturbance ---------------------------------------------------------------------------------
 
     def _step(self, is_save: bool = True):
-        if not self.in_pre_move and self.mode != "eval_test":
+        if not self.in_pre_move:
             if self._phase_start is None:
                 self._phase_start = self._physics_step_count
                 self._slot_origin = self.slot.get_pose()
