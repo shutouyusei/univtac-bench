@@ -7,15 +7,8 @@ import numpy as np
 import pytest
 import torch
 
-from conftest import write_demo
+from conftest import TOY, write_demo
 from rdp_univtac import build, marker, prepare, train
-
-TOY = {
-    "ldp": {"down_dims": [16, 32, 64], "diffusion_step_embed_dim": 16, "obs_encoder": {"resize_shape": [24, 32]}},
-    "at_training": {"num_epochs": 2, "checkpoint_every": 1, "num_workers": 0, "batch_size": 16},
-    "ldp_training": {"num_epochs": 2, "checkpoint_every": 1, "num_workers": 0, "batch_size": 16},
-}
-
 
 @pytest.fixture
 def setup(tmp_path):

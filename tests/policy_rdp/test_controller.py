@@ -6,25 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from conftest import write_demo
-from rdp_univtac import build, controller, prepare, train
-from test_train import TOY
-
-
-@pytest.fixture(scope="module")
-def bundle(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("rdp")
-    demos = tmp / "hdf5"
-    demos.mkdir()
-    for i, T in enumerate((30, 26)):
-        write_demo(demos / f"{i}.hdf5", T, i)
-    cache = tmp / "cache"
-    prepare.build_cache(prepare.demo_paths(demos, 2), cameras=["head"], out=cache)
-    pca = tmp / "pca.npz"
-    prepare.fit_pooled_pca([prepare.demo_paths(demos, 2)]).save(pca)
-    cfg = build.load_config(override=TOY)
-    train.train_at(cfg, cache, pca, tmp / "out", "cpu")
-    return train.train_ldp(cfg, cache, pca, tmp / "out", "cpu")
+from rdp_univtac import controller
 
 
 def step_inputs(k):
@@ -46,8 +28,8 @@ def test_tactile_window_from_3_before_the_chunk_start_to_now():
     assert controller.tactile_indices(chunk_start=0, now=2) == [0, 0, 0, 0, 1, 2]
 
 
-def test_one_latent_per_16_steps_and_growing_decoder_windows(bundle, monkeypatch):
-    c = controller.RDPController.load(bundle, device="cpu")
+def test_one_latent_per_16_steps_and_growing_decoder_windows(rdp_bundle, monkeypatch):
+    c = controller.RDPController.load(rdp_bundle, device="cpu")
     calls = {"latent": 0, "ext": []}
     real_predict, real_decode = c.policy.predict_action, c.policy.predict_from_latent_action
 
@@ -72,8 +54,8 @@ def test_one_latent_per_16_steps_and_growing_decoder_windows(bundle, monkeypatch
     assert all(n == ext for ext, _, n in calls["ext"])
 
 
-def test_actions_are_absolute_arm_joints_and_absolute_gripper(bundle, monkeypatch):
-    c = controller.RDPController.load(bundle, device="cpu")
+def test_actions_are_absolute_arm_joints_and_absolute_gripper(rdp_bundle, monkeypatch):
+    c = controller.RDPController.load(rdp_bundle, device="cpu")
     rel = torch.zeros(1, 40, 8)
     rel[..., :7] = 0.5
     rel[..., 7] = 0.02
@@ -91,8 +73,8 @@ def test_actions_are_absolute_arm_joints_and_absolute_gripper(bundle, monkeypatc
     assert np.allclose(a[:7], joint[:7] + 0.5)
 
 
-def test_reset_clears_the_history(bundle):
-    c = controller.RDPController.load(bundle, device="cpu")
+def test_reset_clears_the_history(rdp_bundle):
+    c = controller.RDPController.load(rdp_bundle, device="cpu")
     c.act(*step_inputs(0))
     c.reset()
     assert c.step == 0 and not c.history["tactile_left"]

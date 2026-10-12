@@ -59,3 +59,7 @@ encoder/ablation/supervision
 # Claude Code worktrees
 /.claude/worktrees
 /policy/lerobot/data
+
+# RDP baseline: converted demonstrations and checkpoints
+/policy/RDP/data
+/policy/RDP/rdp_ckpt

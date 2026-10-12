@@ -3,6 +3,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
@@ -26,3 +27,29 @@ def write_demo(path: Path, T: int, seed: int, cams=("head",)):
             imgs[..., 0] = 200
             data, max_len = HDF5Handler.img_to_stream(imgs)
             f.create_dataset(f"observation/{cam}/rgb", data=np.array(data, dtype=f"S{max_len}"))
+
+
+TOY = {
+    "ldp": {"down_dims": [16, 32, 64], "diffusion_step_embed_dim": 16, "obs_encoder": {"resize_shape": [24, 32]}},
+    "at_training": {"num_epochs": 2, "checkpoint_every": 1, "num_workers": 0, "batch_size": 16},
+    "ldp_training": {"num_epochs": 2, "checkpoint_every": 1, "num_workers": 0, "batch_size": 16},
+}
+
+
+@pytest.fixture(scope="session")
+def rdp_bundle(tmp_path_factory):
+    """A toy RDP trained for 2 + 2 epochs on CPU, written as an evaluation bundle."""
+    from rdp_univtac import build, prepare, train
+
+    tmp = tmp_path_factory.mktemp("rdp")
+    demos = tmp / "hdf5"
+    demos.mkdir()
+    for i, T in enumerate((30, 26)):
+        write_demo(demos / f"{i}.hdf5", T, i)
+    cache = tmp / "cache"
+    prepare.build_cache(prepare.demo_paths(demos, 2), cameras=["head"], out=cache)
+    pca = tmp / "pca.npz"
+    prepare.fit_pooled_pca([prepare.demo_paths(demos, 2)]).save(pca)
+    cfg = build.load_config(override=TOY)
+    train.train_at(cfg, cache, pca, tmp / "out", "cpu")
+    return train.train_ldp(cfg, cache, pca, tmp / "out", "cpu")
