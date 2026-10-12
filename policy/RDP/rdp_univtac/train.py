@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import random
 import sys
@@ -39,6 +40,16 @@ from . import build
 from .dataset import UniVTACImageTactileDataset
 from .marker import MarkerPCA
 from .prepare import load_buffer
+
+
+def config_hash(cfg: dict) -> str:
+    return hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def check_config(previous: dict, cfg: dict, path: Path) -> None:
+    """A checkpoint is only resumed or reused under the config it was trained with."""
+    if previous.get("config_hash") != config_hash(cfg):
+        raise RuntimeError(f"{path} was trained with a different config; use another --out (or remove it)")
 
 
 def seed_everything(seed: int) -> None:
@@ -87,9 +98,11 @@ def train_at(cfg: dict, cache: Path, pca: Path, out: Path, device: str) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     ckpt = out / "at_latest.pt"
     previous = torch.load(ckpt, map_location="cpu", weights_only=False) if ckpt.exists() else None
-    if previous is not None and previous["done"]:
-        print(f"tokenizer already trained: {ckpt}")
-        return ckpt
+    if previous is not None:
+        check_config(previous, cfg, ckpt)
+        if previous["done"]:
+            print(f"tokenizer already trained: {ckpt}")
+            return ckpt
     t = cfg["at_training"]
     seed_everything(t["seed"])
     dataset = load_dataset(cache, pca, images=False)
@@ -122,7 +135,7 @@ def train_at(cfg: dict, cache: Path, pca: Path, out: Path, device: str) -> Path:
     def save(done: bool):
         torch.save({"at": at.state_dict(), "normalizer": normalizer.state_dict(), "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(), "epoch": state["epoch"], "done": done,
-                    "shape_meta": dataset.shape_meta, "config": cfg}, ckpt)
+                    "shape_meta": dataset.shape_meta, "config": cfg, "config_hash": config_hash(cfg)}, ckpt)
 
     run_epochs("at", out, t, len(data), state, steps, save)
     return ckpt
@@ -130,6 +143,7 @@ def train_at(cfg: dict, cache: Path, pca: Path, out: Path, device: str) -> Path:
 
 def load_tokenizer(cfg: dict, shape_meta: dict, at_ckpt: Path, device: str):
     saved = torch.load(at_ckpt, map_location="cpu", weights_only=False)
+    check_config(saved, cfg, at_ckpt)
     if not saved["done"]:
         raise RuntimeError(f"the tokenizer in {at_ckpt} has not finished training")
     at = build.build_at(cfg, shape_meta, device)
@@ -142,6 +156,7 @@ def train_ldp(cfg: dict, cache: Path, pca: Path, out: Path, device: str) -> Path
     bundle = out / "rdp_policy.pt"
     ckpt = out / "ldp_latest.pt"
     if bundle.exists():
+        check_config(torch.load(bundle, map_location="cpu", weights_only=False), cfg, bundle)
         print(f"policy already trained: {bundle}")
         return bundle
     t = cfg["ldp_training"]
@@ -151,6 +166,8 @@ def train_ldp(cfg: dict, cache: Path, pca: Path, out: Path, device: str) -> Path
     at = load_tokenizer(cfg, dataset.shape_meta, out / "at_latest.pt", device)
     actions, _ = dataset.relative_arrays()
     previous = torch.load(ckpt, map_location="cpu", weights_only=False) if ckpt.exists() else None
+    if previous is not None:
+        check_config(previous, cfg, ckpt)
     if previous is None:
         normalizer["latent_action"] = build.latent_normalizer(at, normalizer, actions)
     else:  # the latent normalizer is a posterior-sample fit; keep the one training started with
@@ -190,13 +207,17 @@ def train_ldp(cfg: dict, cache: Path, pca: Path, out: Path, device: str) -> Path
     def save(done: bool):
         torch.save({"model": policy.state_dict(), "ema_model": ema_model.state_dict(), "ema_step": ema.optimization_step,
                     "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(), "epoch": state["epoch"],
-                    "normalizer": normalizer.state_dict(), "done": done}, ckpt)
+                    "normalizer": normalizer.state_dict(), "done": done, "config_hash": config_hash(cfg)}, ckpt)
         if done:
             pca_saved = MarkerPCA.load(pca)
             torch.save({"policy": ema_model.state_dict(), "at": at.state_dict(), "normalizer": normalizer.state_dict(),
                         "pca_mean": pca_saved.mean, "pca_components": pca_saved.components,
-                        "shape_meta": dataset.shape_meta, "cameras": dataset.all_cameras, "config": cfg}, bundle)
+                        "shape_meta": dataset.shape_meta, "cameras": dataset.all_cameras, "config": cfg,
+                        "config_hash": config_hash(cfg)}, bundle)
 
+    if previous is not None and previous["done"]:  # stopped between the last checkpoint and the bundle
+        save(done=True)
+        return bundle
     run_epochs("ldp", out, t, len(data), state, steps, save)
     return bundle
 

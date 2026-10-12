@@ -74,6 +74,25 @@ def test_resume_after_an_interruption(setup, monkeypatch):
     assert torch.load(out / "at_latest.pt", weights_only=False)["done"]
 
 
+def test_a_different_config_is_refused_instead_of_reused(setup):
+    cache, pca, out = setup
+    train.train_at(build.load_config(override=TOY), cache, pca, out, "cpu")
+    other = build.load_config(override=build.deep_update(TOY, {"at_training": {"num_epochs": 3}}))
+    with pytest.raises(RuntimeError, match="different config"):
+        train.train_at(other, cache, pca, out, "cpu")
+
+
+def test_a_lost_bundle_is_rewritten_without_training(setup):
+    cache, pca, out = setup
+    cfg = build.load_config(override=TOY)
+    train.train_at(cfg, cache, pca, out, "cpu")
+    bundle = train.train_ldp(cfg, cache, pca, out, "cpu")
+    bundle.unlink()
+    assert train.train_ldp(cfg, cache, pca, out, "cpu").exists()
+    assert epochs(out, "ldp") == [1, 2]
+    assert torch.load(bundle, weights_only=False)["config_hash"] == train.config_hash(cfg)
+
+
 def test_parse_set():
     assert train.parse_set(["ldp_training.num_epochs=3", "ldp.down_dims=[8, 16]"]) == {
         "ldp_training": {"num_epochs": 3}, "ldp": {"down_dims": [8, 16]}}
