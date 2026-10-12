@@ -85,6 +85,17 @@ def test_normalizers_follow_the_official_choice():
     assert torch.allclose(img, torch.ones_like(img))
 
 
+def test_without_images_the_samples_match_except_the_frames():
+    arrays = episode_arrays()
+    full = ds.UniVTACImageTactileDataset(arrays, cameras=["cam_head"])
+    light = ds.UniVTACImageTactileDataset(arrays, cameras=["cam_head"], images=False)
+    a, b = full[17], light[17]
+    assert "cam_head" not in b["obs"] and light.shape_meta == full.shape_meta
+    assert torch.equal(a["action"], b["action"])
+    assert torch.equal(a["extended_obs"]["tactile_right"], b["extended_obs"]["tactile_right"])
+    assert torch.equal(a["obs"]["robot_joint"], b["obs"]["robot_joint"])
+
+
 def test_two_cameras_and_shape_meta():
     arrays = episode_arrays(cams=("cam_head", "cam_wrist"))
     d = ds.UniVTACImageTactileDataset(arrays, cameras=["cam_head", "cam_wrist"])

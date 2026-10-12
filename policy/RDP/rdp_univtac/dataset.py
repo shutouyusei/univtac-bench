@@ -99,9 +99,11 @@ def to_relative(action: np.ndarray, robot_joint: np.ndarray) -> tuple[np.ndarray
 
 class UniVTACImageTactileDataset(torch.utils.data.Dataset):
     def __init__(self, buffer: ArrayBuffer, cameras: list[str], horizon: int = HORIZON,
-                 n_obs_steps: int = N_OBS_STEPS, obs_ratio: int = OBS_RATIO):
+                 n_obs_steps: int = N_OBS_STEPS, obs_ratio: int = OBS_RATIO, images: bool = True):
+        """``images=False`` leaves the camera frames out of the samples (the tokenizer never reads them)."""
         self.buffer = buffer
-        self.cameras = list(cameras)
+        self.all_cameras = list(cameras)
+        self.cameras = list(cameras) if images else []
         self.horizon = horizon
         self.obs_ratio = obs_ratio
         self.dataset_obs_steps = n_obs_steps * obs_ratio
@@ -111,8 +113,8 @@ class UniVTACImageTactileDataset(torch.utils.data.Dataset):
             replay_buffer=buffer, sequence_length=horizon, pad_before=self.dataset_obs_steps - 1,
             pad_after=horizon - self.dataset_obs_steps, keys=self.cameras + self.lowdim_keys + ["action"],
             key_first_k=key_first_k)
-        h, w = buffer[self.cameras[0]].shape[1:3]
-        self.shape_meta = shape_meta(self.cameras, (h, w), buffer[TACTILE_KEYS[0]].shape[1])
+        h, w = buffer[self.all_cameras[0]].shape[1:3]
+        self.shape_meta = shape_meta(self.all_cameras, (h, w), buffer[TACTILE_KEYS[0]].shape[1])
 
     def __len__(self) -> int:
         return len(self.sampler)
@@ -161,6 +163,6 @@ class UniVTACImageTactileDataset(torch.utils.data.Dataset):
         n["robot_joint"] = get_range_normalizer_from_stat(array_to_stats(joints.reshape(-1, ARM)))
         for key in ["gripper_width", *TACTILE_KEYS]:
             n[key] = SingleFieldLinearNormalizer.create_fit(self.buffer[key])
-        for c in self.cameras:
+        for c in self.all_cameras:
             n[c] = get_image_range_normalizer()
         return n
