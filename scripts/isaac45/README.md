@@ -6,7 +6,7 @@ results stay comparable with the numbers published on the UniVTAC benchmark (all
 
 ```bash
 bash scripts/isaac45/install.sh            # all steps; env UniVTAC45 (UNIVTAC45_CONDA_ENV to rename)
-bash scripts/isaac45/install.sh --from uipc # resume from a step: env isaacsim isaaclab curobo tacex vcpkg uipc extras
+bash scripts/isaac45/install.sh --from uipc # resume from a step: assets env isaacsim isaaclab curobo tacex vcpkg uipc extras
 bash scripts/isaac45/install.sh --check    # versions only
 bash scripts/isaac45/install.sh --locked   # rebuild with every pip version pinned to requirements.lock
 ```
@@ -37,6 +37,7 @@ build of the same vendored libuipc (`isaac51` branch of this repository).
 | Host compiler for CMake | system | `toolchains/gcc12-system-ld` / `gxx12-system-ld` (conda GCC 12 with the host linker) | avoids old-linker RELR errors, as in the 5.1 build |
 | libuipc / cuRobo CUDA arch | native (setup.py default) / torch default | `CUDAARCHS=120`, `TORCH_CUDA_ARCH_LIST=12.0` (libuipc: sm_120 SASS + compute_120 PTX) | explicit instead of detected; `setup.py` unchanged |
 | apt / sudo, demo runs | `sudo apt install ...`, TacEx RL demo, grasp_classify collection | none | install only; system prerequisites (build-essential, git) are assumed |
+| TacEx assets | used as checked out | `assets` step: `git lfs fetch https://github.com/univtac/UniVTAC.git` + `git lfs checkout`, then index reset to upstream's tree and the 114 paths marked `skip-worktree` | upstream `main` stores 114 TacEx assets (robot / gel-pad USDs, meshes) as Git LFS pointer *text* in ordinary blobs with no `.gitattributes`, so a plain clone has no robot gel pads (`Could not find prim ... gelpad_left`). Each pointer names the sha256 of its object, so the fetched files are exactly the intended ones; `--check` fails while pointer text remains |
 | Extras | transforms3d trimesh tetgen | + `ipython<9` | `policy/ACT` imports IPython at module level; IPython 9 needs psutil>=7, which rl_games (Isaac Lab RL extras) pins below 6 |
 
 cuRobo stays at upstream's 0a50de1 and warp-lang at upstream's 1.0.0 (the fork uses cuRobo d64c4b0 and

@@ -12,7 +12,7 @@
 # ~/.cache/univtac-isaac45 (vcpkg and its own binary cache) is touched.
 #
 # Usage: bash scripts/isaac45/install.sh [--from STEP] [--only STEP] [--locked] [--check]
-#   STEP: env isaacsim isaaclab curobo tacex vcpkg uipc extras
+#   STEP: assets env isaacsim isaaclab curobo tacex vcpkg uipc extras
 #   --locked: also constrain every pip step to the versions recorded in requirements.lock
 #             (its plain name==version lines), so a rebuild gets the recorded environment.
 set -Eeuo pipefail
@@ -34,7 +34,10 @@ CUROBO_COMMIT="0a50de1ba72db304195d59d9d0b1ed269696047f"     # upstream scripts/
 WARP_VERSION="${UNIVTAC45_WARP_VERSION:-1.0.0}"              # upstream pin for cuRobo
 TORCH_SCATTER_WHEEL="https://data.pyg.org/whl/torch-2.7.0%2Bcu128/torch_scatter-2.1.2%2Bpt27cu128-cp310-cp310-linux_x86_64.whl"
 UIPC_DIR="${PROJECT_ROOT}/third_party/TacEx/source/tacex_uipc"
-STEPS=(env isaacsim isaaclab curobo tacex vcpkg uipc extras)
+# The upstream 4.5 tree stores 114 TacEx assets (robot / gel-pad USDs, meshes) as Git LFS pointer text in
+# ordinary blobs, with no .gitattributes; the objects live on upstream's LFS server.
+LFS_REMOTE="${UNIVTAC45_LFS_REMOTE:-https://github.com/univtac/UniVTAC.git}"
+STEPS=(assets env isaacsim isaaclab curobo tacex vcpkg uipc extras)
 
 FROM=""
 ONLY=""
@@ -70,6 +73,22 @@ want() {
     return 1
 }
 
+if [[ "${CHECK_ONLY}" -eq 0 ]] && want assets; then
+    echo "[assets] TacEx LFS objects from ${LFS_REMOTE}"
+    git -C "${PROJECT_ROOT}" lfs fetch "${LFS_REMOTE}"
+    git -C "${PROJECT_ROOT}" lfs checkout
+    # lfs checkout stages the real files over the committed pointer text; keep the index at upstream's tree
+    # and the files out of `git status` (the content is the sha256 each pointer names).
+    staged="$(mktemp)"
+    git -C "${PROJECT_ROOT}" diff --cached --name-only -- third_party/TacEx > "${staged}"
+    if [[ -s "${staged}" ]]; then
+        git -C "${PROJECT_ROOT}" reset -q --pathspec-from-file="${staged}"
+        git -C "${PROJECT_ROOT}" update-index --skip-worktree --stdin < "${staged}"
+    fi
+    echo "[assets] $(wc -l < "${staged}") files materialised and marked skip-worktree"
+    rm -f "${staged}"
+fi
+
 CONDA_BASE="$(conda info --base)"
 # shellcheck source=/dev/null
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
@@ -104,6 +123,14 @@ export CC="${HERE}/toolchains/gcc12-system-ld" CXX="${HERE}/toolchains/gxx12-sys
 export CUDAHOSTCXX="${CXX}"
 
 check() {
+    local pointers
+    # grep exits 1 when nothing matches, which is the good case
+    pointers="$({ grep -rlI '^version https://git-lfs.github.com/spec/v1' "${PROJECT_ROOT}/third_party/TacEx/source" "${PROJECT_ROOT}/assets" 2>/dev/null || true; } | wc -l)"
+    if [[ "${pointers}" -ne 0 ]]; then
+        echo "[wrong] ${pointers} asset files are still Git LFS pointer text (run --only assets)"
+        return 1
+    fi
+    echo "[ok] no Git LFS pointer text left in TacEx sources or assets/"
     "${PYTHON_BIN}" - <<'PY'
 from importlib.metadata import PackageNotFoundError, version
 
