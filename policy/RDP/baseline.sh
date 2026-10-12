@@ -9,7 +9,7 @@
 #
 # Environment: EP_NUM (50), SEEDS (100), START_SEED (1000000), TASK_CONFIG (clean51), DEVICE (cuda:0),
 # UNIVTAC_DATA (the main checkout's data folder, linked into this checkout's data/ when missing), PY (the
-# UniVTAC env's python), RDP_SET (extra --set overrides for training, e.g. for a smoke run), DRY_RUN=1 prints
+# UniVTAC env's python), RDP_SET (--set overrides, e.g. a smoke run; outputs go to <run>-smoke), DRY_RUN=1 prints
 # the commands only. Outputs: policy/RDP/data/ (cache, marker_pca.npz), policy/RDP/rdp_ckpt/<task>-<config>-<EP>/
 # (at_latest.pt, ldp_latest.pt, rdp_policy.pt, train_log.jsonl, rdp.yml, eval_<start>_<count>.json/.log) and
 # eval_result/RDP/<task>/rdp/. The eval stage uses scripts/baseline_eval.py.
@@ -39,7 +39,8 @@ PY=${PY:-$HOME/miniforge3/envs/UniVTAC/bin/python}
 export PYTHONPATH="$RDP_DIR:$REPO${PYTHONPATH:+:$PYTHONPATH}"
 PCA="$RDP_DIR/data/marker_pca.npz"
 CACHE="$RDP_DIR/data/$TASK-$TASK_CONFIG-$EP_NUM"
-CKPT="$RDP_DIR/rdp_ckpt/$TASK-$TASK_CONFIG-$EP_NUM"
+# Runs with overrides (smoke runs) train into their own folder, never into the full run's.
+CKPT="$RDP_DIR/rdp_ckpt/$TASK-$TASK_CONFIG-$EP_NUM${RDP_SET:+-smoke}"
 
 run() {
   echo "+ $*"
@@ -76,6 +77,9 @@ case "$STAGE" in
   train_at) train at ;;
   train_ldp) train ldp ;;
   eval)
+    if [ "${DRY_RUN:-0}" != "1" ] && [ ! -f "$REPO/scripts/baseline_eval.py" ]; then
+      echo "scripts/baseline_eval.py is missing (it comes with the ACT baseline branch, PR #20)" >&2; exit 1
+    fi
     if [ "${DRY_RUN:-0}" != "1" ] && [ ! -f "$CKPT/rdp_policy.pt" ]; then
       echo "not trained: $CKPT/rdp_policy.pt" >&2; exit 1
     fi

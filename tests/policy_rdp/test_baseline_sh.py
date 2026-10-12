@@ -47,6 +47,18 @@ def test_eval_uses_the_shared_protocol():
     assert "--start 1000000 --count 100" in out and "eval_1000000_100.json" in out
 
 
+def test_overridden_runs_get_their_own_folder():
+    code, out = run("lift_bottle", "train_at", RDP_SET="at_training.num_epochs=2")
+    assert code == 0, out
+    assert "rdp_ckpt/lift_bottle-clean51-50-smoke" in out and "--set at_training.num_epochs=2" in out
+
+
+def test_eval_stops_with_a_clear_message_when_it_cannot_run():
+    code, out = run("lift_bottle", "eval", DRY_RUN=0)
+    assert code != 0
+    assert "baseline_eval.py" in out or "not trained" in out
+
+
 @pytest.mark.parametrize("args", [(), ("lift_bottle",), ("lift_bottle", "fly"), ("nope", "prepare"), ("lift_bottle", "pca")])
 def test_bad_arguments_fail(args):
     code, _ = run(*args)
