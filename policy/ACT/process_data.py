@@ -7,7 +7,7 @@ from _base_data_preprocessor import *
 def main(task_name, task_config, expert_data_num):
     output_path = f"./data/sim-{task_name}/{task_config}-{expert_data_num}"
     
-    task_settings_path = Path(__file__).parent / './task_settings.json'
+    task_settings_path = Path(__file__).parent.parent / 'task_settings.json'
     if task_settings_path.exists():
         with open(task_settings_path, 'r') as f:
             task_settings = json.load(f)
