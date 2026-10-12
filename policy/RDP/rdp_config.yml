@@ -1,0 +1,83 @@
+# RDP on UniVTAC. Every value is the official one unless marked "UniVTAC"; sources are files of
+# github.com/xiaoxiaoxh/reactive_diffusion_policy at reactive_diffusion_policy/UPSTREAM_COMMIT.
+
+# config/at/at_wipe_lift.yaml (8-D actions here, like wipe / lift; peel uses n_latent_dims 4 for 4-D actions)
+horizon: 32
+n_obs_steps: 2
+dataset_obs_temporal_downsample_ratio: 2
+at:
+  n_latent_dims: 8
+  mlp_layer_num: 1
+  use_conv_encoder: true
+  conv_latent_dims: 32
+  conv_layer_num: 1
+  use_rnn_decoder: true
+  rnn_latent_dims: 32
+  rnn_layer_num: 1
+  kl_multiplier: 1.0e-6
+  n_embed: 16
+  use_vq: false
+  vqvae_groups: 4
+  act_scale: 1.0
+
+# config/train_at_workspace.yaml
+at_training:
+  batch_size: 64
+  num_workers: 4
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  lr_scheduler: cosine
+  lr_warmup_steps: 100
+  num_epochs: 601
+  checkpoint_every: 10
+  seed: 42
+
+# config/train_latent_diffusion_unet_real_image_workspace.yaml
+ldp:
+  noise_scheduler:
+    num_train_timesteps: 100
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    clip_sample: true
+    set_alpha_to_one: true
+    steps_offset: 0
+    prediction_type: epsilon
+  obs_encoder:
+    rgb_model: resnet18
+    weights: null
+    resize_shape: [240, 320]
+    random_crop_ratio: 0.9
+    use_group_norm: true
+    share_rgb_model: false
+    imagenet_norm: true
+  diffusion_step_embed_dim: 128
+  down_dims: [512, 1024, 2048]
+  n_groups: 8
+  cond_predict_scale: true
+  num_inference_steps: 8  # eval_real_robot_flexiv.py overrides the config's 100 with 8
+
+ldp_training:
+  batch_size: 64
+  num_workers: 8
+  lr: 1.0e-4  # x number of GPUs in the official workspace; one GPU here
+  betas: [0.95, 0.999]
+  eps: 1.0e-8
+  weight_decay: 1.0e-6
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  num_epochs: 401
+  checkpoint_every: 10
+  seed: 42
+  ema:
+    update_after_step: 0
+    inv_gamma: 1.0
+    power: 0.75
+    min_value: 0.0
+    max_value: 0.9999
+
+# config/task/real_peel_image_gelsight_emb_ldp_24fps.yaml + env_runner/real_runner.py
+deploy:
+  chunk_interval: 16  # a new latent action every 16 control steps (tcp_ensemble update interval)
+  latency_step: 0  # UniVTAC: the simulator is synchronous; the official 4 compensates real-robot latency
+                   # (the repo's no-latency-matching ablation config uses 0)
