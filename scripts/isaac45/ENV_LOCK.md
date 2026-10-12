@@ -1,7 +1,11 @@
 # Environment lock: Isaac Sim 4.5 on RTX 5090
 
-Built 2026-10-13 with `bash scripts/isaac45/install.sh` from a fresh Conda environment; the complete
-`pip freeze` is `requirements.lock` (263 lines; the editable lines carry this machine's paths).
+Built 2026-10-13 with `bash scripts/isaac45/install.sh` from a fresh Conda environment, then
+`--from vcpkg --locked` rebuilt libuipc against the build's own vcpkg binary cache (0 archives restored,
+37 stored, so nothing from other vcpkg builds is linked in). The complete `pip freeze` is
+`requirements.lock` (263 lines; 249 plain `name==version` lines are what `--locked` pins). The editable
+lines carry this machine's paths and the checkout commit at freeze time (the TacEx sources themselves are
+upstream 0dafa10, unchanged).
 
 ## Machine
 
@@ -42,10 +46,14 @@ python 3.10.22, cuda-toolkit 12.8.2 (nvcc 12.8.93), conda-forge gcc/gxx 12.4.0, 
 
 ## Checks run
 
-- `install.sh --check`: every expected version present, torch CUDA 12.8, device RTX 5090.
+- `install.sh --check`: every expected version present (torch_scatter built for pt27cu128), torch CUDA 12.8,
+  device RTX 5090.
 - `pip check`: no broken requirements.
-- sm_120 smoke without the Isaac Sim app: warp 1.0.0 compiles and launches a kernel on the 5090; cuRobo's
-  CUDA extension imports; `libuipc_backend_cuda.so` contains sm_120 code only (`cuobjdump --list-elf`).
+- `--locked` rebuild of vcpkg / uipc / extras: passes with all 249 lock pins; `pip freeze` afterwards equals
+  `requirements.lock` except the checkout commit in the four TacEx editable lines.
+- sm_120 smoke without the Isaac Sim app (after the rebuild): warp 1.0.0 compiles and launches a kernel on the
+  5090; cuRobo's CUDA extension imports; `libuipc_backend_cuda.so` contains sm_120 code only
+  (`cuobjdump --list-elf`).
 
 Not yet run: launching Isaac Sim (first launch asks to accept the NVIDIA Omniverse EULA), an expert episode,
 and the released-checkpoint reproduction (see `README.md`).

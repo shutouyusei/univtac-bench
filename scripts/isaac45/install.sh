@@ -8,11 +8,13 @@
 #     reinstalls 2.5.1+cu124, which has no sm_120 kernels; torch_scatter is the matching pt27cu128 wheel;
 #   * vcpkg pinned to the revision the Isaac Sim 5.1 build of the same libuipc uses, with its tinygltf
 #     hash overlay, cloned outside the repository; no sudo, no edits to ~/.bashrc, no demo runs.
-# Nothing outside the named Conda environment, this checkout's ignored third_party/ and VCPKG_ROOT is
-# touched.
+# Nothing outside the named Conda environment, this checkout's ignored third_party/ and
+# ~/.cache/univtac-isaac45 (vcpkg and its own binary cache) is touched.
 #
-# Usage: bash scripts/isaac45/install.sh [--from STEP] [--only STEP] [--check]
+# Usage: bash scripts/isaac45/install.sh [--from STEP] [--only STEP] [--locked] [--check]
 #   STEP: env isaacsim isaaclab curobo tacex vcpkg uipc extras
+#   --locked: also constrain every pip step to the versions recorded in requirements.lock
+#             (its plain name==version lines), so a rebuild gets the recorded environment.
 set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -21,6 +23,9 @@ CONDA_ENV_NAME="${UNIVTAC45_CONDA_ENV:-UniVTAC45}"
 CUDA_ARCH="${UNIVTAC45_CUDA_ARCH:-120}"
 BUILD_JOBS="${UNIVTAC45_BUILD_JOBS:-8}"
 VCPKG_ROOT="${UNIVTAC45_VCPKG_ROOT:-${HOME}/.cache/univtac-isaac45/vcpkg}"
+# vcpkg's default binary cache (~/.cache/vcpkg/archives) is shared with other builds, and its ABI hash sees
+# the compiler wrapper script, not the conda GCC behind it; this build keeps a cache of its own.
+VCPKG_ARCHIVES="${UNIVTAC45_VCPKG_ARCHIVES:-${HOME}/.cache/univtac-isaac45/vcpkg-archives}"
 VCPKG_COMMIT="dd3097e305afa53f7b4312371f62058d2e665320"
 ISAACLAB_DIR="${PROJECT_ROOT}/third_party/IsaacLab"
 ISAACLAB_COMMIT="90b79bb2d44feb8d833f260f2bf37da3487180ba"   # v2.1.1
@@ -34,15 +39,23 @@ STEPS=(env isaacsim isaaclab curobo tacex vcpkg uipc extras)
 FROM=""
 ONLY=""
 CHECK_ONLY=0
+LOCKED=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --from) FROM="$2"; shift ;;
         --only) ONLY="$2"; shift ;;
+        --locked) LOCKED=1 ;;
         --check) CHECK_ONLY=1 ;;
-        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         *) echo "unknown argument $1" >&2; exit 2 ;;
     esac
     shift
+done
+for name in "${FROM}" "${ONLY}"; do
+    if [[ -n "${name}" && " ${STEPS[*]} " != *" ${name} "* ]]; then
+        echo "unknown step '${name}' (one of: ${STEPS[*]})" >&2
+        exit 2
+    fi
 done
 
 want() {
@@ -106,16 +119,30 @@ for package in [*expected, "isaaclab", "nvidia-curobo", "warp-lang", "torch-scat
         continue
     wanted = expected.get(package)
     ok = wanted is None or installed.split("+")[0] == wanted
+    if package == "torch-scatter":
+        ok = installed.endswith("+pt27cu128")  # TacEx's setup.py pulls the pt28 wheel; the tacex step replaces it
     print(f"[{'ok' if ok else 'wrong'}] {package}=={installed}")
     failed |= not ok
 import torch
-print(f"[{'ok' if torch.version.cuda == '12.8' else 'wrong'}] torch CUDA {torch.version.cuda}; "
+cuda_ok = torch.version.cuda == "12.8"
+print(f"[{'ok' if cuda_ok else 'wrong'}] torch CUDA {torch.version.cuda}; "
       f"device {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'}")
+failed |= not cuda_ok
 raise SystemExit(1 if failed else 0)
 PY
 }
 
 if [[ "${CHECK_ONLY}" -eq 1 ]]; then check; exit $?; fi
+
+LOCK_CONSTRAINT=""
+if [[ "${LOCKED}" -eq 1 ]]; then
+    # requirements.lock without its editable and direct-URL lines (those are built or pinned in the steps)
+    LOCK_CONSTRAINT="$(mktemp --suffix=.txt)"
+    trap 'rm -f "${LOCK_CONSTRAINT}"' EXIT
+    grep -E '^[A-Za-z0-9_.-]+==[^ ]+$' "${HERE}/requirements.lock" > "${LOCK_CONSTRAINT}"
+    export PIP_CONSTRAINT="${LOCK_CONSTRAINT}"
+    echo "[locked] $(wc -l < "${LOCK_CONSTRAINT}") pinned versions from requirements.lock"
+fi
 
 if want isaacsim; then
     echo "[isaacsim] torch 2.7.0+cu128, Isaac Sim 4.5.0.0"
@@ -125,8 +152,8 @@ if want isaacsim; then
     "${PIP[@]}" install "isaacsim[all,extscache]==4.5.0.0" --extra-index-url https://pypi.nvidia.com
     "${PIP[@]}" install numpy==1.26.4
 fi
-# Every later pip step keeps torch / torchvision / numpy (scripts/isaac45/constraints.txt).
-export PIP_CONSTRAINT="${HERE}/constraints.txt"
+# Every later pip step keeps torch / torchvision / numpy (scripts/isaac45/constraints.txt), plus the lock.
+export PIP_CONSTRAINT="${HERE}/constraints.txt${LOCK_CONSTRAINT:+ ${LOCK_CONSTRAINT}}"
 
 if want isaaclab; then
     echo "[isaaclab] Isaac Lab v2.1.1 (${ISAACLAB_COMMIT})"
@@ -164,6 +191,10 @@ if want vcpkg; then
         git -C "${VCPKG_ROOT}" checkout -q --detach "${VCPKG_COMMIT}"
         "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
     fi
+    if [[ "$(git -C "${VCPKG_ROOT}" rev-parse HEAD)" != "${VCPKG_COMMIT}" ]]; then
+        echo "vcpkg at ${VCPKG_ROOT} is not at ${VCPKG_COMMIT}; move it aside or set UNIVTAC45_VCPKG_ROOT" >&2
+        exit 1
+    fi
 fi
 
 if want uipc; then
@@ -171,6 +202,8 @@ if want uipc; then
     # vcpkg only for this build: exported globally it would leak into unrelated CMake builds (egl_probe).
     export CMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
     export VCPKG_OVERLAY_PORTS="${HERE}/toolchains/vcpkg-overlay-ports"
+    mkdir -p "${VCPKG_ARCHIVES}"
+    export VCPKG_BINARY_SOURCES="clear;files,${VCPKG_ARCHIVES},readwrite"
     rm -rf "${UIPC_DIR}/build"
     "${PIP[@]}" install -e "${UIPC_DIR}" -v --no-build-isolation
 fi
@@ -178,7 +211,7 @@ fi
 if want extras; then
     echo "[extras] upstream extras + IPython for policy/ACT"
     "${PIP[@]}" install transforms3d trimesh tetgen
-    # policy/ACT imports IPython at module level; IPython 9 needs psutil>=7 (isaacsim-kernel pins lower)
+    # policy/ACT imports IPython at module level; IPython 9 needs psutil>=7, rl_games (Isaac Lab RL) pins <6
     "${PIP[@]}" install "ipython<9"
     "${PIP[@]}" install numpy==1.26.4
 fi
