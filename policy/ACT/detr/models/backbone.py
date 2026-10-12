@@ -128,6 +128,18 @@ def build_backbone(args):
     model.num_channels = backbone.num_channels
     return model
 
+ACT_DIR = Path(__file__).resolve().parents[2]
+
+
+def resolve_tactile_ckpt(ckpt: str | None) -> Path | None:
+    """The pretrained tactile encoder's path; a relative path is relative to policy/ACT, so training (run from
+    policy/ACT) and evaluation (run from the repository root) load the same file. None or "" = no checkpoint."""
+    if not ckpt:
+        return None
+    path = Path(ckpt)
+    return path if path.is_absolute() else (ACT_DIR / path).resolve()
+
+
 class TactileBackbone(nn.Module):
     """ResNet backbone with frozen BatchNorm."""
 
@@ -147,8 +159,11 @@ class TactileBackbone(nn.Module):
         backbone = Tactile(backbone='resnet18', supervise=[
             'marker', 'rgb', 'marked_rgb', 'pose', 'depth'
         ], latent_dims=self.num_channels, norm_layer=FrozenBatchNorm2d)
-        if ckpt and Path(ckpt).exists():
-            backbone.load_state_dict(torch.load(ckpt, weights_only=True))
+        path = resolve_tactile_ckpt(ckpt)
+        if path is not None:
+            if not path.exists():
+                raise FileNotFoundError(f"tactile_ckpt {ckpt!r} resolves to {path}, which does not exist")
+            backbone.load_state_dict(torch.load(path, weights_only=True))
 
         self.tactile_type = tactile_type
         if self.tactile_type == 'feat':
