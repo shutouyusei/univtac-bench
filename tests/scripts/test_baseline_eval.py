@@ -71,6 +71,20 @@ def test_wilson_interval():
     assert be.wilson(0, 0) == (0.0, 0.0)
 
 
+def test_error_outcomes_count_as_missing_and_are_replaced_by_a_rerun():
+    first = {1: {"result": "success"}, 2: {"result": "error"}}
+    assert be.missing_seeds(first, [1, 2, 3]) == [2, 3]
+    rerun = {2: {"result": "fail"}, 3: {"result": "error"}}
+    merged = be.merge([first, rerun], [1, 2, 3])
+    assert merged == {1: {"result": "success"}, 2: {"result": "fail"}, 3: {"result": "error"}}
+    assert be.missing_seeds(merged, [1, 2, 3]) == [3]
+
+
+def test_summary_excludes_errors_from_the_denominator():
+    line = be.summary_line("x", {1: {"result": "success"}, 2: {"result": "error"}}, [1, 2])
+    assert line.startswith("x: 1/1 success") and "without outcome: [2]" in line
+
+
 def test_summary_line():
     outcomes = {1: {"result": "success"}, 2: {"result": "fail"}, 3: {"result": "success"}}
     line = be.summary_line("act lift_bottle", outcomes, [1, 2, 3, 4])

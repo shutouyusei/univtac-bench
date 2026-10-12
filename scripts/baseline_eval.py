@@ -48,15 +48,17 @@ def load_outcomes(metadata: Path) -> dict[int, dict]:
 
 
 def missing_seeds(outcomes: dict[int, dict], seeds: list[int]) -> list[int]:
-    return [s for s in seeds if s not in outcomes]
+    """Seeds without an outcome; ``eval_policy.py`` records a simulator exception as result "error", which is
+    no outcome of the policy either (as in stflow's ``failed_seeds``)."""
+    return [s for s in seeds if s not in outcomes or outcomes[s]["result"] == "error"]
 
 
 def merge(parts: list[dict[int, dict]], seeds: list[int]) -> dict[int, dict]:
-    """Per seed of ``seeds``, the outcome of the first part that has one."""
+    """Per seed of ``seeds``, the first outcome that is not an error, else the last error seen."""
     out: dict[int, dict] = {}
     for part in parts:
         for s in seeds:
-            if s not in out and s in part:
+            if s in part and (s not in out or out[s]["result"] == "error"):
                 out[s] = part[s]
     return out
 
@@ -96,8 +98,9 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
 
 
 def summary_line(name: str, outcomes: dict[int, dict], seeds: list[int]) -> str:
-    n = len(outcomes)
-    k = sum(v["result"] == "success" for v in outcomes.values())
+    valid = [v for v in outcomes.values() if v["result"] != "error"]
+    n = len(valid)
+    k = sum(v["result"] == "success" for v in valid)
     lo, hi = wilson(k, n)
     missing = missing_seeds(outcomes, seeds)
     return (f"{name}: {k}/{n} success ({100 * k / max(n, 1):.0f} %, 95 % CI {100 * lo:.0f}-{100 * hi:.0f}); "
