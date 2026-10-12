@@ -54,6 +54,12 @@ def test_bad_arguments_fail(args):
     assert code != 0
 
 
+def test_process_data_reads_the_shared_task_settings():
+    src = (REPO / "policy" / "ACT" / "process_data.py").read_text()
+    assert "Path(__file__).parent.parent / 'task_settings.json'" in src
+    assert (REPO / "policy" / "task_settings.json").exists()
+
+
 def test_unknown_arm_fails():
     code, _ = run("lift_bottle", "train", ACT_ARM="both")
     assert code != 0
