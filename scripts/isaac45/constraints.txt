@@ -1,0 +1,6 @@
+# Applied (PIP_CONSTRAINT) to every pip step after torch / Isaac Sim are in, so that dependency resolution of
+# Isaac Lab's RL extras, cuRobo or TacEx cannot replace them: without it, `isaaclab.sh --install` resolves
+# isaaclab_rl[all] to the newest torch (2.14 / CUDA 13). A conflict now stops the install instead.
+torch==2.7.0
+torchvision==0.22.0
+numpy==1.26.4
