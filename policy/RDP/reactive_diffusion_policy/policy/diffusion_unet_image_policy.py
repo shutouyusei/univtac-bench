@@ -9,7 +9,10 @@ from reactive_diffusion_policy.policy.base_image_policy import BaseImagePolicy
 from reactive_diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
 from reactive_diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
 from reactive_diffusion_policy.model.vision.multi_image_obs_encoder import MultiImageObsEncoder
-from reactive_diffusion_policy.model.vision.timm_obs_encoder import TimmObsEncoder
+try:
+    from reactive_diffusion_policy.model.vision.timm_obs_encoder import TimmObsEncoder
+except ImportError:  # UniVTAC port: timm encoder not vendored; RDP uses MultiImageObsEncoder
+    TimmObsEncoder = MultiImageObsEncoder
 from reactive_diffusion_policy.common.pytorch_util import dict_apply
 
 class DiffusionUnetImagePolicy(BaseImagePolicy):

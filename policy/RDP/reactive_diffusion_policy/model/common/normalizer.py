@@ -1,6 +1,11 @@
 from typing import Union, Dict
 
-import zarr
+try:
+    import zarr
+except ImportError:  # UniVTAC port: no zarr; data arrives as numpy / torch
+    class zarr:  # noqa: N801
+        class Array:
+            pass
 import numpy as np
 import torch
 import torch.nn as nn

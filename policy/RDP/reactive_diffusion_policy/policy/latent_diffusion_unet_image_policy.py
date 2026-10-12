@@ -8,7 +8,10 @@ from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
 from reactive_diffusion_policy.policy.diffusion_unet_image_policy import DiffusionUnetImagePolicy
 from reactive_diffusion_policy.model.vision.multi_image_obs_encoder import MultiImageObsEncoder
-from reactive_diffusion_policy.model.vision.timm_obs_encoder import TimmObsEncoder
+try:
+    from reactive_diffusion_policy.model.vision.timm_obs_encoder import TimmObsEncoder
+except ImportError:  # UniVTAC port: timm encoder not vendored; RDP uses MultiImageObsEncoder
+    TimmObsEncoder = MultiImageObsEncoder
 from reactive_diffusion_policy.model.vae.model import VAE
 from reactive_diffusion_policy.model.common.normalizer import LinearNormalizer
 from reactive_diffusion_policy.common.pytorch_util import dict_apply

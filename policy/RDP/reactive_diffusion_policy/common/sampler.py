@@ -1,7 +1,9 @@
 from typing import Optional
 import numpy as np
 import numba
-from reactive_diffusion_policy.common.replay_buffer import ReplayBuffer
+# UniVTAC port: the zarr ReplayBuffer is not vendored; SequenceSampler only needs an object with
+# episode_ends, keys() and __getitem__ (rdp_univtac.dataset.ArrayBuffer).
+ReplayBuffer = object
 
 
 @numba.jit(nopython=True)

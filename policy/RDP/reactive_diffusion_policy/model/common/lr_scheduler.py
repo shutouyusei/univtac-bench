@@ -1,7 +1,8 @@
-from diffusers.optimization import (
-    Union, SchedulerType, Optional,
-    Optimizer, TYPE_TO_SCHEDULER_FUNCTION
-)
+# UniVTAC port: newer diffusers no longer re-export typing / torch names from diffusers.optimization.
+from typing import Optional, Union
+
+from torch.optim import Optimizer
+from diffusers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION
 
 def get_scheduler(
     name: Union[str, SchedulerType],
