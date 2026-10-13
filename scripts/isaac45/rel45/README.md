@@ -32,6 +32,9 @@ demos, is evaluated in `rel`, the environment the demos came from.
 `eval_rel45.sh <task> <cfg> <pub|rel> <start_seed> <count>` runs `scripts/eval_policy.py` through these wrappers
 and `scripts/isaac45/run_with_render_overrides.py`. `eval_rel45_s2.sh` is the identical command for seeds
 1000010-99; it writes a separate record file and allows 200 s per episode.
+`eval_stflow_rel45.sh <task> <task_config> <deploy yml> <start_seed> <count>` is the same environment for a stflow
+checkpoint (`policy/stflow`), called by streaming-tactile-flow `scripts/run_experiment.py --eval-script`. It
+refuses to run unless the 4.5 checkout's `policy/stflow` equals this branch's copy.
 
 ## train/ - ACT on the released demos, official recipe
 
