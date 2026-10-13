@@ -1,0 +1,9 @@
+policy_name: stflow
+seed: 0
+instruction_type: seen
+# eval_policy.py loads instructions/<task>.json unless this is null; stflow takes no instruction (as ACT/deploy.yml)
+instuction_file: null
+stflow_ckpt_dir: ~/Desktop/Robotics/streaming-tactile-flow/outputs/base_insert_hole/checkpoints/last
+stflow_method_args: {}
+stflow_device: cuda:0
+stflow_jpeg_roundtrip: true
