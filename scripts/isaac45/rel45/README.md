@@ -51,3 +51,24 @@ Configs `policy/ACT/train_config_{,vision_}rel45{,_all}.yml` = upstream `train_c
 `num_epochs` (detr/main.py needs it to skip argparse; unused, training stops on num_steps) and, for the tactile arm,
 `tactile_ckpt` pointing at the released encoder (`data/checkpoints/encoder.pth`; the upstream path does not exist
 and is skipped silently). `_all` (head + wrist camera) for lift_can and insert_tube, as `task_settings.json` says.
+
+## evidence/ - why this environment is trusted
+
+`released_ckpts/`: the released ACT checkpoints evaluated in the public 4.5 checkout (no rel patches, see above) on
+seeds 1000000-09, against the authors' own shipped evaluation (`data/checkpoints/<task>/<arm>/metadata.json`, same
+seeds). Report scripts were fixed before the runs.
+
+| arm | ours, 8 tasks x 10 seeds | authors, same seeds | authors' 100-seed rate inside our interval |
+|---|---|---|---|
+| vision_only | 29/80 | 30/80 | 8/8 tasks |
+| univtac (tactile) | 27/80 | 33/80 | 7/8 tasks (put_bottle_in_shelf: 3/10 vs 8 %) |
+
+`release_match/`: one-seed collects compared with the released demo of the same seed (`compare_*.py`, fixed
+before the runs). Variant `G28.05` of `run_task_seed0.sh` is exactly `rel`. Recorded coverage:
+
+- pull_out_key, insert_HDMI, insert_tube, lift_bottle (`compare_tasks.md`): `G28.05` vs the demo, next to the public
+  grasp (`G`) and a second demo as reference. E.g. insert_HDMI finger 4.28 vs demo 4.27 mm, frame-0 depth diff 0.01 mm.
+- insert_hole (`compare_seed0.md`): variants A-E only; threshold 28.05 gives finger 6.29 vs demo 6.26 mm (public
+  5.72). No `G28.05` record of insert_hole is kept, and the collect outputs themselves were deleted.
+- lift_can, put_bottle_in_shelf, grasp_classify: no record (these use the public grasp threshold in `rel`).
+- `run_task_seed0.sh` variants F, R2-R11 need scripts not included here (marker-axis and render experiments).
