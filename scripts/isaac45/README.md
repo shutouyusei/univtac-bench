@@ -43,6 +43,27 @@ build of the same vendored libuipc (`isaac51` branch of this repository).
 cuRobo stays at upstream's 0a50de1 and warp-lang at upstream's 1.0.0 (the fork uses cuRobo d64c4b0 and
 warp 1.12.1); if warp 1.0.0 fails on sm_120 at runtime, that is recorded here before it is changed.
 
+## Camera noise on RTX 50-series and the render override
+
+With Isaac Lab's default `balanced` preset (what the upstream eval script gets, since it sets no rendering
+mode), the head and wrist cameras render grain-noisy on the RTX 5090 while the tactile images are clean; the
+released ACT checkpoints then fail (insert_hole, seeds 1000000-19: vision_only 1/20, univtac 0/20 against the
+authors' 6/20 each). The same symptom is reported upstream (univtac/UniVTAC#16, H20; IsaacLab discussion #2869,
+RTX 5090 + Isaac Sim 4.5) and is said to be fixed only from Isaac Sim 5.0. `--rendering_mode quality` (#16's fix
+on H20) does not remove it here. Both presets enable the stochastic sampled direct lighting and the DL
+denoiser (DLSS Ray Reconstruction) that is meant to clean it; switching both off, with the preset otherwise
+unchanged, gives clean images close to the authors' demonstrations:
+
+```bash
+UNIVTAC45_RENDER_OVERRIDES="/rtx/directLighting/sampledLighting/enabled=false;/rtx-transient/dldenoiser/enabled=false" \
+  python scripts/isaac45/run_with_render_overrides.py scripts/eval_policy.py insert_hole clean ACT/deploy ...
+```
+
+`run_with_render_overrides.py` applies the settings right after Isaac Lab sets its preset (a plain
+`--kit_args "--/rtx/..."` is overwritten by the preset) and then runs the upstream script unchanged.
+This is a deviation in rendering from the authors' setup (their GPU's denoiser presumably worked); it is
+judged by the reproduction check below.
+
 ## Reproduction check
 
 The released ACT checkpoints (`data/checkpoints/<task>/{univtac,vision_only}`) ship the authors' Isaac Sim
