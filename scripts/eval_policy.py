@@ -54,6 +54,12 @@ parser.add_argument(
     default=100
 )
 parser.add_argument(
+    "--env_config",
+    type=str,
+    default=None,
+    help="Environment overrides (task_config/env/<name>.yml or a path); none keeps the public environment",
+)
+parser.add_argument(
     "--print_only",
     action='store_true',
 )
@@ -228,6 +234,16 @@ def main():
     env_cfg.save_frequency = task_config.get("save_frequency", env_cfg.save_frequency)
     env_cfg.video_frequency = task_config.get("video_frequency", env_cfg.video_frequency)
     env_cfg.random_texture = task_config.get("random_texture", False)
+    env_config = {}
+    if args_cli.env_config is not None:
+        env_config, _ = get_config(
+            args_cli.env_config, default_root=Path(__file__).parent.parent / 'task_config' / 'env', type='yaml'
+        )
+    env_cfg.marker_noise_level = env_config.get("marker_noise_level")
+    env_cfg.marker_weight_method = env_config.get("marker_weight_method")
+    grasp_thr = env_config.get("adaptive_grasp_depth_threshold", {}).get(task_file_name)
+    if grasp_thr is not None:
+        env_cfg.adaptive_grasp_depth_threshold = grasp_thr
 
     env_cfg.scene.num_envs = 1
     env_cfg.sim.device = args_cli.device if args_cli.device is not None \
@@ -244,7 +260,8 @@ def main():
     
     log_path = task.save_root / f"log.log"
     log(f"Task Name: {task_file_name}")
-    log(f"Task Config: {task_config_file.absolute()}") 
+    log(f"Task Config: {task_config_file.absolute()}")
+    log(f"Env Config: {json.dumps(env_config, ensure_ascii=False)}")
     log(f"Eval Config: {json.dumps(deploy_config, ensure_ascii=False, indent=4)}\n{'-' * 20}\n") 
     log(f"Task init finish in {task_init_cost:.2f} seconds.")
     log(f"Policy init finish in {policy_init_cost:.2f} seconds.")

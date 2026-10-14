@@ -42,6 +42,12 @@ parser.add_argument(
     default=-1,
 )
 parser.add_argument(
+    "--env_config",
+    type=str,
+    default=None,
+    help="Environment overrides (task_config/env/<name>.yml or a path); none keeps the public environment",
+)
+parser.add_argument(
     "--gpu",
     type=str,
     default=None,
@@ -188,6 +194,16 @@ def main():
     env_cfg.render_frequency = task_config.get("render_frequency", env_cfg.render_frequency)
     env_cfg.obs_data_type = task_config.get("observations", {})
     env_cfg.random_texture = task_config.get("random_texture", False)
+    env_config = {}
+    if args_cli.env_config is not None:
+        env_config, _ = get_config(
+            args_cli.env_config, default_root=Path(__file__).parent.parent / 'task_config' / 'env', type='yaml'
+        )
+    env_cfg.marker_noise_level = env_config.get("marker_noise_level")
+    env_cfg.marker_weight_method = env_config.get("marker_weight_method")
+    grasp_thr = env_config.get("adaptive_grasp_depth_threshold", {}).get(task_file_name)
+    if grasp_thr is not None:
+        env_cfg.adaptive_grasp_depth_threshold = grasp_thr
 
     env_cfg.scene.num_envs = 1
     

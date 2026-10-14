@@ -1,0 +1,18 @@
+# Release-matched environment: the state the released isaac45 demos (HF byml/UniVTAC) were collected in.
+# Use with --env_config rel on scripts/eval_policy.py or scripts/collect_data.py; without it the public code runs.
+# Evidence and coverage: scripts/isaac45/rel45/README.md.
+
+# solid black marker dots (public: uniform noise 0-80 inside every dot)
+marker_noise_level: 0
+
+# a9abc0d marker binding (public: Delaunay on recentred surface points)
+marker_weight_method: nearest_face
+
+# gsmini adaptive-grasp depth threshold in mm, per task; tasks not listed keep their public value.
+# lift_can, put_bottle_in_shelf and grasp_classify have no release-match record.
+adaptive_grasp_depth_threshold:
+  pull_out_key: 28.05
+  insert_hole: 28.05
+  insert_HDMI: 28.05
+  insert_tube: 28.05
+  lift_bottle: 28.05

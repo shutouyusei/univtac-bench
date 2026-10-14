@@ -160,6 +160,10 @@ class BaseTaskCfg(DirectRLEnvCfg):
     adaptive_grasp_depth_threshold = None # in mm
     reset_time_limit: float = 120.0  # in seconds
 
+    # None keeps the tactile sensor's own ManiSkillSimulatorCfg value
+    marker_noise_level: float | None = None
+    marker_weight_method: Literal['delaunay', 'nearest_face'] | None = None
+
     cameras: list[CameraCfg] = [
         CameraCfg(
             name="head",
@@ -258,7 +262,14 @@ class BaseTask(UipcRLEnv):
             cfg.robot = create_franka_xensews_gripper(data_type=data_type)
         else:
             raise ValueError(f'Unknown tactile sensor type: {cfg.tactile_sensor_type}')
-        
+
+        for tactile in cfg.robot.tactiles:
+            marker_cfg = tactile.sensor_cfg.marker_motion_sim_cfg
+            if cfg.marker_noise_level is not None:
+                marker_cfg.marker_noise_level = cfg.marker_noise_level
+            if cfg.marker_weight_method is not None:
+                marker_cfg.marker_weight_method = cfg.marker_weight_method
+
         if cfg.adaptive_grasp_depth_threshold is None:
             cfg.adaptive_grasp_depth_threshold = cfg.robot.adaptive_grasp_depth_threshold
         elif isinstance(cfg.adaptive_grasp_depth_threshold, dict):
