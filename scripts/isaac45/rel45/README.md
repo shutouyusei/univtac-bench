@@ -1,8 +1,9 @@
 # rel45: the release-matched Isaac Sim 4.5 environment
 
-Everything here is an **as-run copy** of the scripts that produced the Isaac 4.5 results (ACT baselines trained on
-the released demos). Absolute paths point at the run machine (checkout `~/Desktop/Robotics/univtac-isaac45`, env
-`UniVTAC45`, a job scratch directory for records); they are kept unchanged so the reviewed code is the code that ran.
+The scripts that produced the Isaac 4.5 results (ACT baselines trained on the released demos). `train/` and
+`evidence/` are **as-run copies**; `env/` selects the environment with `--env_config` (below), which replaced the
+import-time wrappers the runs used. Absolute paths point at the run machine (checkout
+`~/Desktop/Robotics/univtac-isaac45`, env `UniVTAC45`, a job scratch directory for records).
 All of it runs on top of the environment of `scripts/isaac45/` (install, render overrides).
 
 ## Why a release-matched environment
@@ -22,15 +23,22 @@ demos, is evaluated in `rel`, the environment the demos came from.
 
 ## env/ - the evaluation environment
 
-`rel` = public checkout unchanged, plus three import-time patches chained in front of the upstream script:
+`rel` = `scripts/eval_policy.py` / `scripts/collect_data.py` with `--env_config rel`
+(`task_config/env/rel.yml`); `pub` = the same without it. The three overrides, each defaulting to the public value:
 
-- `run_marker_noise.py` (MARKER_NOISE=0): verbatim `draw_markers` with the noise level from the environment.
-- `run_old_marker.py` (OLD_MARKER_SETUP=0): the a9abc0d `_gen_marker_weight` body; main's `setup()` is kept.
-- `run_grasp_thr.py` (GRASP_THR=28.05): overrides the resolved adaptive-grasp threshold. Applied to
-  pull_out_key, insert_hole, insert_HDMI, insert_tube, lift_bottle.
+- `marker_noise_level: 0` (`ManiSkillSimulatorCfg`, public 80): solid marker dots; 0 also skips the noise draw.
+- `marker_weight_method: nearest_face` (public `delaunay`): the a9abc0d `_gen_marker_weight` body; main's
+  `setup()` is kept (no `init_vertices()` re-call).
+- `adaptive_grasp_depth_threshold`: 28.05 mm on pull_out_key, insert_hole, insert_HDMI, insert_tube, lift_bottle;
+  the other tasks keep the public threshold.
 
-`eval_rel45.sh <task> <cfg> <pub|rel> <start_seed> <count>` runs `scripts/eval_policy.py` through these wrappers
-and `scripts/isaac45/run_with_render_overrides.py`. `eval_rel45_s2.sh` is the identical command for seeds
+The stage 1 / stage 2 runs applied the same three overrides as import-time wrappers (`run_marker_noise.py`,
+`run_old_marker.py` with `OLD_MARKER_SETUP=0`, `run_grasp_thr.py`). The flag code carries their function bodies
+unchanged (AST-identical apart from where the noise level is read); the results were not re-run with the flags.
+`evidence/release_match/run_task_seed0.sh` still names those wrappers: variant `G28.05` = `--env_config rel`.
+
+`eval_rel45.sh <task> <cfg> <pub|rel> <start_seed> <count>` runs `scripts/eval_policy.py` through
+`scripts/isaac45/run_with_render_overrides.py`. `eval_rel45_s2.sh` is the identical command for seeds
 1000010-99; it writes a separate record file and allows 200 s per episode.
 
 ## train/ - ACT on the released demos, official recipe
