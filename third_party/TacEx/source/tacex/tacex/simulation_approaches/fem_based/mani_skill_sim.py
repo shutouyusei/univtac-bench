@@ -71,6 +71,7 @@ class ManiSkillSimulator(GelSightSimulator):
             sub_marker_num=self.cfg.sub_marker_num,
             marker_radius=self.radius,
             num_markers=self.cfg.marker_params.num_markers,
+            marker_weight_method=self.cfg.marker_weight_method,
         )
 
         self.marker_motion_sim._gen_marker_grid()
@@ -357,12 +358,13 @@ class ManiSkillSimulator(GelSightSimulator):
 
         marker_image = marker_image[pad_size:-pad_size, pad_size:-pad_size]
         
-        noise_level = 80
-        noise = torch.rand_like(marker_image) * noise_level
-        marker_mask = marker_image < 255
-        marker_image = torch.where(
-            marker_mask,
-            torch.clamp(marker_image + noise, 0, 255),
-            marker_image)
-        
+        noise_level = self.cfg.marker_noise_level
+        if noise_level > 0:
+            noise = torch.rand_like(marker_image) * noise_level
+            marker_mask = marker_image < 255
+            marker_image = torch.where(
+                marker_mask,
+                torch.clamp(marker_image + noise, 0, 255),
+                marker_image)
+
         return marker_image
