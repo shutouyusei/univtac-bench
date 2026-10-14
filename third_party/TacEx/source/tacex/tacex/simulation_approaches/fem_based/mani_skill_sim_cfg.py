@@ -48,6 +48,17 @@ class ManiSkillSimulatorCfg(GelSightSimulatorCfg):
 
     marker_radius: float = 1 # in mm
 
+    marker_noise_level: float = 80.0
+    """Upper bound of the uniform noise added inside every marker patch (0-255 scale). 0 draws solid dots."""
+
+    marker_weight_method: Literal['delaunay', 'nearest_face'] = 'delaunay'
+    """How marker points are bound to gelpad surface faces.
+
+    - delaunay: Delaunay triangulation of the recentred surface points; every marker must lie inside the hull.
+    - nearest_face: barycentric weights in the nearest of 4 face centres on the raw camera-frame points
+      (extrapolates outside the hull). The marker binding the released isaac45 demos were collected with.
+    """
+
     @configclass
     class MarkerParams:
         """Dimensions here are in mm (we assume that the world units are meters)"""
