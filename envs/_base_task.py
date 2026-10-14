@@ -265,10 +265,16 @@ class BaseTask(UipcRLEnv):
 
         for tactile in cfg.robot.tactiles:
             marker_cfg = tactile.sensor_cfg.marker_motion_sim_cfg
-            if cfg.marker_noise_level is not None:
-                marker_cfg.marker_noise_level = cfg.marker_noise_level
-            if cfg.marker_weight_method is not None:
-                marker_cfg.marker_weight_method = cfg.marker_weight_method
+            for name in ('marker_noise_level', 'marker_weight_method'):
+                value = getattr(cfg, name)
+                if value is None:
+                    continue
+                # a cfg class without the field would accept the attribute and silently keep the public behaviour
+                if not hasattr(marker_cfg, name):
+                    raise RuntimeError(
+                        f'{type(marker_cfg).__module__}.{type(marker_cfg).__name__} has no {name}: '
+                        f'the imported tacex predates this flag')
+                setattr(marker_cfg, name, value)
 
         if cfg.adaptive_grasp_depth_threshold is None:
             cfg.adaptive_grasp_depth_threshold = cfg.robot.adaptive_grasp_depth_threshold

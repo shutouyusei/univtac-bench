@@ -32,6 +32,10 @@ demos, is evaluated in `rel`, the environment the demos came from.
 - `adaptive_grasp_depth_threshold`: 28.05 mm on pull_out_key, insert_hole, insert_HDMI, insert_tube, lift_bottle;
   the other tasks keep the public threshold.
 
+`tacex` is an editable install: every checkout imports TacEx from the checkout it was installed from
+(`univtac-isaac45`), so that checkout must carry the TacEx flags too. With an older TacEx, `BaseTask` raises
+instead of running with public markers.
+
 The stage 1 / stage 2 runs applied the same three overrides as import-time wrappers (`run_marker_noise.py`,
 `run_old_marker.py` with `OLD_MARKER_SETUP=0`, `run_grasp_thr.py`). The flag code carries their function bodies
 unchanged (AST-identical apart from where the noise level is read); the results were not re-run with the flags.
