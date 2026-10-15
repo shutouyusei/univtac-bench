@@ -31,17 +31,22 @@ import launch  # noqa: E402
 import results  # noqa: E402
 import runpod_api  # noqa: E402
 
-FINAL = {"collected", "failed", "incomplete_copy", "timeout", "exited", "lost", "not_created", "stopped_low_balance"}
+FINAL = {"collected", "failed", "incomplete_copy", "timeout", "exited", "lost", "not_created", "stopped_low_balance",
+         "init_timeout"}
 STOPPED = (None, "TERMINATED", "EXITED")
 
 
-def decide(desired_status, done: bool, hours: float, limit_h: float) -> str:
+def decide(desired_status, done: bool, hours: float, limit_h: float, started: bool = True,
+           init_limit_h: float = None) -> str:
+    """started: the container is up (public ssh port assigned); before that the image is still being pulled."""
     if desired_status in (None, "TERMINATED"):
         return "lost"
     if desired_status == "EXITED":
         return "exited"
     if done:
         return "collect"
+    if not started and init_limit_h is not None and hours > init_limit_h:
+        return "init_timeout"
     return "timeout" if hours > limit_h else "wait"
 
 
@@ -133,8 +138,15 @@ def handle(entry: dict, client, run_dir: Path, args, connect=None) -> None:
     endpoint = runpod_api.ssh_endpoint(pod) if status not in STOPPED else None
     conn = connect(*endpoint) if endpoint else None
     action = decide(status, bool(conn) and conn.done(remote_job), hours_since(entry["created_utc"]),
-                    entry.get("limit_h", args.max_hours))
+                    entry.get("limit_h", args.max_hours), started=endpoint is not None,
+                    init_limit_h=args.init_timeout_min / 60)
     if action == "wait":
+        return
+    if action == "init_timeout":  # nothing on the pod yet; a stuck image pull only bills
+        client.delete_pod(pod_id)
+        entry.update(status="init_timeout", attempts=entry.get("attempts", 1))
+        notify(args.notify_cmd, f"[runpod] {entry['key']}: container not up after {args.init_timeout_min} min, "
+                                f"pod {pod_id} deleted")
         return
     local = run_dir / entry["key"]
     if action in ("collect", "timeout") and conn:
@@ -159,9 +171,9 @@ def launch_guard(running: int, max_pods: int, balance: float, min_balance: float
 
 
 def requeueable(entry: dict, max_attempts: int) -> bool:
-    """An eval that failed with nothing evaluated (a broken host), with attempts left."""
-    return (entry["status"] == "failed" and entry.get("evaluated") == 0 and "spec" in entry
-            and entry.get("attempts", 1) < max_attempts)
+    """A host-side failure (eval failed with nothing evaluated, or the container never started), attempts left."""
+    host_failure = entry["status"] == "init_timeout" or (entry["status"] == "failed" and entry.get("evaluated") == 0)
+    return host_failure and "spec" in entry and entry.get("attempts", 1) < max_attempts
 
 
 def requeue_host_failures(record: dict, run_dir: Path, max_attempts: int) -> None:
@@ -205,6 +217,8 @@ def main(argv=None) -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--records", default=str(launch.DEFAULT_RECORDS))
     parser.add_argument("--max-hours", type=float, default=6.0, help="limit for pods whose record has no limit_h")
+    parser.add_argument("--init-timeout-min", type=float, default=45,
+                        help="delete a pod whose container is not up after this long (stuck image pull)")
     parser.add_argument("--poll-s", type=int, default=120)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--ssh-key", default=str(Path("~/.ssh/id_ed25519").expanduser()))

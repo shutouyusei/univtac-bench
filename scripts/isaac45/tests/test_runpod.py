@@ -162,6 +162,11 @@ class Decide(unittest.TestCase):
                                             ("RUNNING", False, 7, "timeout"), ("EXITED", False, 1, "exited")]:
             self.assertEqual(collect.decide(status, done=done, hours=hours, limit_h=6), wanted)
 
+    def test_container_that_never_starts(self):
+        self.assertEqual(collect.decide("RUNNING", False, 1.0, 6, started=False, init_limit_h=0.75), "init_timeout")
+        self.assertEqual(collect.decide("RUNNING", False, 0.5, 6, started=False, init_limit_h=0.75), "wait")
+        self.assertEqual(collect.decide("RUNNING", False, 1.0, 6, started=True, init_limit_h=0.75), "wait")
+
 
 def make_job(job: Path, metadata=None, videos=(), manifest=True, exit_code=0) -> Path:
     """A job folder as eval_released.sh leaves it (metadata None: upstream wrote no eval_result)."""
@@ -204,12 +209,15 @@ class VerifyCollected(TempDir):
 
 
 class FakeClient:
-    def __init__(self, status="RUNNING"):
-        self.status, self.calls = status, []
+    def __init__(self, status="RUNNING", started=True):
+        self.status, self.started, self.calls = status, started, []
 
     def get_pod(self, pod_id):
-        return None if self.status is None else {"desiredStatus": self.status, "publicIp": "1.2.3.4",
-                                                 "portMappings": {"22": 2222}}
+        if self.status is None:
+            return None
+        if not self.started:  # still pulling the image: no public port yet
+            return {"desiredStatus": self.status, "publicIp": "", "portMappings": None}
+        return {"desiredStatus": self.status, "publicIp": "1.2.3.4", "portMappings": {"22": 2222}}
 
     def stop_pod(self, pod_id):
         self.calls.append(("stop", pod_id))
@@ -252,7 +260,7 @@ class Handle(TempDir):
                  "created_utc": created.strftime(results.UTC_FORMAT)}
         run_dir = self.tmp / "run"
         run_dir.mkdir()
-        args = type("Args", (), {"notify_cmd": "", "ssh_key": "k", "max_hours": 6.0})()
+        args = type("Args", (), {"notify_cmd": "", "ssh_key": "k", "max_hours": 6.0, "init_timeout_min": 45})()
         conn = FakeConnection(self.tmp / "pod", drop)
         collect.handle(entry, client, run_dir, args, connect=lambda ip, port: conn)
         return entry, run_dir
@@ -291,6 +299,16 @@ class Handle(TempDir):
         entry, run_dir = self.run_handle(client, limit_h=1.0, hours_old=2.0)
         self.assertEqual((entry["status"], client.calls), ("timeout", [("stop", "p1")]))
         self.assertTrue((run_dir / self.KEY / "deploy" / "t" / "metadata.json").is_file())
+
+    def test_pod_that_never_starts_is_deleted(self):
+        client = FakeClient(started=False)
+        entry, _ = self.run_handle(client, hours_old=1.0)
+        self.assertEqual((entry["status"], client.calls), ("init_timeout", [("delete", "p1")]))
+
+    def test_starting_pod_waits(self):
+        client = FakeClient(started=False)
+        entry, _ = self.run_handle(client, hours_old=0.3)
+        self.assertEqual((entry["status"], client.calls), ("launched", []))
 
     def test_gone_pod_is_lost(self):
         client = FakeClient(status=None)
@@ -372,6 +390,12 @@ class Relaunch(TempDir):
         self.assertEqual(statuses, ["not_created", "failed", "failed"])
         self.assertTrue((self.tmp / "job0.attempt1" / "DONE").is_file())
         self.assertFalse((self.tmp / "job0").exists())
+
+    def test_init_timeout_is_requeued(self):
+        record = self.record("init_timeout")
+        record["pods"][0]["attempts"] = 1
+        self.assertEqual(self.run_pass(record, RelaunchClient()), ["launched"])
+        self.assertEqual(record["pods"][0]["attempts"], 2)
 
 
 if __name__ == "__main__":
