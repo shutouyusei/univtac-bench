@@ -15,6 +15,8 @@
 #   STEP: assets env isaacsim isaaclab curobo tacex vcpkg uipc extras
 #   --locked: also constrain every pip step to the versions recorded in requirements.lock
 #             (its plain name==version lines), so a rebuild gets the recorded environment.
+#   UNIVTAC45_CUDA_ARCH: SM versions to build for, ';'-separated (default 120; "89;120" also runs on
+#             RTX 40-series, e.g. a Docker image built without a GPU and run on cloud RTX 4090s).
 set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -49,7 +51,7 @@ while [[ $# -gt 0 ]]; do
         --only) ONLY="$2"; shift ;;
         --locked) LOCKED=1 ;;
         --check) CHECK_ONLY=1 ;;
-        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
         *) echo "unknown argument $1" >&2; exit 2 ;;
     esac
     shift
@@ -114,7 +116,10 @@ PIP=("${PYTHON_BIN}" -m pip)
 export PATH="${CONDA_PREFIX}/bin:${PATH}"
 export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export CUDA_HOME="${CONDA_PREFIX}" CUDA_PATH="${CONDA_PREFIX}" CUDACXX="${CONDA_PREFIX}/bin/nvcc"
-export CUDAARCHS="${CUDA_ARCH}" TORCH_CUDA_ARCH_LIST="${CUDA_ARCH:0:${#CUDA_ARCH}-1}.${CUDA_ARCH: -1}"
+# shellcheck source=cuda_arch.sh
+source "${HERE}/cuda_arch.sh"
+TORCH_ARCHS="$(torch_arch_list "${CUDA_ARCH}")" || exit 2
+export CUDAARCHS="${CUDA_ARCH}" TORCH_CUDA_ARCH_LIST="${TORCH_ARCHS}"
 export CMAKE_BUILD_PARALLEL_LEVEL="${BUILD_JOBS}" MAX_JOBS="${BUILD_JOBS}"
 # Conda GCC 12 with the host linker (avoids old-linker RELR errors), as in the Isaac Sim 5.1 build.
 export UNIVTAC_GCC12="${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-gcc"
@@ -225,7 +230,7 @@ if want vcpkg; then
 fi
 
 if want uipc; then
-    echo "[uipc] libuipc + tacex_uipc for sm_${CUDA_ARCH}"
+    echo "[uipc] libuipc + tacex_uipc for SM ${CUDA_ARCH}"
     # vcpkg only for this build: exported globally it would leak into unrelated CMake builds (egl_probe).
     export CMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
     export VCPKG_OVERLAY_PORTS="${HERE}/toolchains/vcpkg-overlay-ports"
