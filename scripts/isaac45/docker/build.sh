@@ -10,8 +10,8 @@
 # (e.g. `set -a; source .env; set +a`), pushes, logs out again, and prints the pushed digest, which is
 # what a pod should run.
 # Build arguments of the Dockerfile can be overridden through the environment of the same name
-# (UNIVTAC45_BUILD_JOBS, UPSTREAM_COMMIT, DOWNLOAD_REVISION, MINIFORGE_VERSION). The SM list stays the Dockerfile's
-# 89;120: a UNIVTAC45_CUDA_ARCH exported for local builds would silently drop the RTX 40-series.
+# (UNIVTAC45_BUILD_JOBS, UPSTREAM_COMMIT, DOWNLOAD_REVISION, MINIFORGE_VERSION). The SM version stays the
+# Dockerfile's 89: a UNIVTAC45_CUDA_ARCH=120 exported for local builds would make an image RTX 40s cannot run.
 set -Eeuo pipefail
 
 if [[ $# -lt 2 || $# -gt 3 || ( $# -eq 3 && "$3" != "--push" ) ]]; then

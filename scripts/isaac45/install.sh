@@ -15,8 +15,8 @@
 #   STEP: assets env isaacsim isaaclab curobo tacex vcpkg uipc extras (--only skips the final check)
 #   --locked: also constrain every pip step to the versions recorded in requirements.lock
 #             (its plain name==version lines), so a rebuild gets the recorded environment.
-#   UNIVTAC45_CUDA_ARCH: SM versions to build for, ';'-separated (default 120; "89;120" also runs on
-#             RTX 40-series, e.g. a Docker image built without a GPU and run on cloud RTX 4090s).
+#   UNIVTAC45_CUDA_ARCH: the one SM version to build for (default 120; 89 for RTX 40-series, whose PTX
+#             also runs on RTX 50, e.g. a Docker image built without a GPU and run on cloud RTX 4090s).
 set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

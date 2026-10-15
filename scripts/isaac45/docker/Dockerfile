@@ -4,13 +4,13 @@
 # .git only; the assets step needs .git to fetch TacEx's LFS objects from upstream).
 #
 # The environment is the one scripts/isaac45/install.sh --locked builds locally, run one step per layer,
-# for SM 8.9 + 12.0 (RTX 40 / 50 series) because no GPU is visible at build time. The released checkpoints
+# for SM 8.9 (RTX 40 native; its PTX runs on RTX 50), as no GPU is visible at build time. The released checkpoints
 # come from the official download script. The build fails if any file outside scripts/isaac45 differs
 # from the upstream commit, so the image evaluates upstream's code.
 FROM nvidia/cuda:12.8.1-base-ubuntu24.04
 
 ARG MINIFORGE_VERSION=26.3.2-3
-ARG UNIVTAC45_CUDA_ARCH="89;120"
+ARG UNIVTAC45_CUDA_ARCH=89
 ARG UNIVTAC45_BUILD_JOBS=8
 ARG UPSTREAM_COMMIT=0dafa10262e22f486f160a55d6f11aeab12d8e7b
 ARG DOWNLOAD_REVISION=master

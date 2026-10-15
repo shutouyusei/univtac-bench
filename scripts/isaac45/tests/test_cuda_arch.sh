@@ -28,12 +28,11 @@ expect_rejected() {
     fi
 }
 
-expect "120" "12.0"
-expect "89;120" "8.9;12.0"
-expect "86;89;120" "8.6;8.9;12.0"
+expect "120" "12.0+PTX"
+expect "89" "8.9+PTX"
+expect_rejected "89;120"   # libuipc passes the CMake value unquoted to set_target_properties: one SM only
 expect_rejected "abc"
 expect_rejected "8"
-expect_rejected "89;"
 expect_rejected ""
 
 [[ "${failures}" -eq 0 ]] && echo "all passed" || { echo "${failures} failed"; exit 1; }
