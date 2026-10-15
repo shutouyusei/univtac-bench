@@ -15,8 +15,7 @@
 #   STEP: assets env isaacsim isaaclab curobo tacex vcpkg uipc extras (--only skips the final check)
 #   --locked: also constrain every pip step to the versions recorded in requirements.lock
 #             (its plain name==version lines), so a rebuild gets the recorded environment.
-#   UNIVTAC45_CUDA_ARCH: the one SM version to build for (default 120; 89 for RTX 40-series, whose PTX
-#             also runs on RTX 50, e.g. a Docker image built without a GPU and run on cloud RTX 4090s).
+#   UNIVTAC45_CUDA_ARCH: the one SM to build for (default 120; 89 for RTX 40, whose PTX also runs on RTX 50).
 set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -51,7 +50,7 @@ while [[ $# -gt 0 ]]; do
         --only) ONLY="$2"; shift ;;
         --locked) LOCKED=1 ;;
         --check) CHECK_ONLY=1 ;;
-        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+        -h|--help) awk 'NR > 1 && /^#/ {sub(/^# ?/, ""); print; next} NR > 1 {exit}' "$0"; exit 0 ;;
         *) echo "unknown argument $1" >&2; exit 2 ;;
     esac
     shift
@@ -248,8 +247,7 @@ if want extras; then
     "${PIP[@]}" install numpy==1.26.4
 fi
 
-# A single step leaves the environment incomplete on purpose (e.g. one Docker layer per step); the
-# full-environment check is for whole runs, or --check afterwards.
+# One step (e.g. one Docker layer) leaves the environment incomplete; the full check needs all of them.
 if [[ -n "${ONLY}" ]]; then
     echo "[only ${ONLY}] done (run --check for the full-environment check)"
     exit 0

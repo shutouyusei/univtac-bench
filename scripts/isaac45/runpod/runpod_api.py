@@ -1,7 +1,4 @@
-"""Minimal client for RunPod's REST API (https://rest.runpod.io/v1): create, get, list, stop and delete pods.
-
-Standard library only. The API key comes from the caller (launch.py / collect.py read RUNPOD_API_KEY).
-"""
+"""Minimal stdlib client for RunPod's REST API (pods: create, get, list, stop, delete)."""
 
 import json
 import urllib.error
@@ -16,31 +13,27 @@ class RunPodError(RuntimeError):
 
 
 class RunPod:
-    def __init__(self, api_key: str, base_url: str = BASE_URL, opener=urllib.request.urlopen, timeout: float = 60):
+    def __init__(self, api_key: str, opener=urllib.request.urlopen):
         if not api_key:
             raise RunPodError("no RunPod API key (set RUNPOD_API_KEY)")
         self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
         self.opener = opener
-        self.timeout = timeout
 
     def _call(self, method: str, path: str, body=None, query=None):
-        url = f"{self.base_url}{path}"
-        if query:
-            url += "?" + urllib.parse.urlencode(query)
+        url = BASE_URL + path + ("?" + urllib.parse.urlencode(query) if query else "")
         data = None if body is None else json.dumps(body).encode()
-        request = urllib.request.Request(url, data=data, method=method)
-        request.add_header("Authorization", f"Bearer {self.api_key}")
+        headers = {"Authorization": f"Bearer {self.api_key}"}
         if data is not None:
-            request.add_header("Content-Type", "application/json")
+            headers["Content-Type"] = "application/json"
         try:
-            with self.opener(request, timeout=self.timeout) as response:
+            with self.opener(urllib.request.Request(url, data=data, headers=headers, method=method),
+                             timeout=60) as response:
                 raw = response.read()
         except urllib.error.HTTPError as error:
-            detail = error.read().decode(errors="replace")[:500]
-            raise RunPodError(f"{method} {path}: HTTP {error.code} {detail}") from error
+            raise RunPodError(f"{method} {path}: HTTP {error.code} {error.read().decode(errors='replace')[:500]}") \
+                from error
         except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
-            # the request may still have reached RunPod (a pod may exist); callers check before retrying a create
+            # the request may still have reached RunPod: a create may have made a pod (launch.find_created checks)
             raise RunPodError(f"{method} {path}: no response ({error})") from error
         try:
             return json.loads(raw) if raw.strip() else None
@@ -51,7 +44,7 @@ class RunPod:
         return self._call("POST", "/pods", body=spec)
 
     def get_pod(self, pod_id: str):
-        """The pod, or None once RunPod no longer knows it (deleted)."""
+        """The pod, or None once it is deleted."""
         try:
             return self._call("GET", f"/pods/{pod_id}")
         except RunPodError as error:
@@ -70,9 +63,6 @@ class RunPod:
 
 
 def ssh_endpoint(pod: dict):
-    """(public ip, public port of the pod's port 22), or None while the pod is still starting."""
-    ip = pod.get("publicIp")
-    port = (pod.get("portMappings") or {}).get("22")
-    if not ip or not port:
-        return None
-    return ip, int(port)
+    """(public ip, public port of port 22), or None while the pod starts."""
+    ip, port = pod.get("publicIp"), (pod.get("portMappings") or {}).get("22")
+    return (ip, int(port)) if ip and port else None

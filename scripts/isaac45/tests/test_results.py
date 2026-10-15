@@ -16,6 +16,7 @@ RELEASED_LOG_HEAD = """[2026-03-24 11:09:26] Task Name: lift_can
     "train_config": "train_config_all"
 }
 """
+TWO_SEEDS = {"5": {"result": "success"}, "6": {"result": "failed"}}
 
 
 class TrainConfigFromLog(unittest.TestCase):
@@ -30,9 +31,8 @@ class TrainConfigFromLog(unittest.TestCase):
 class SeedCoverage(unittest.TestCase):
     def test_complete_run(self):
         meta = {"10": {"result": "success"}, "11": {"result": "failed"}, "12": {"result": "success"}}
-        cov = results.seed_coverage(meta, start=10, count=3)
-        self.assertEqual(cov, {"expected": 3, "evaluated": 3, "success": 2, "errors": 0, "missing": [],
-                               "outside": []})
+        self.assertEqual(results.seed_coverage(meta, start=10, count=3),
+                         {"expected": 3, "evaluated": 3, "success": 2, "errors": 0, "missing": [], "outside": []})
 
     def test_errored_seeds_leave_the_denominator_as_upstream_does(self):
         meta = {"10": {"result": "success"}, "11": {"result": "error"}, "12": {"result": "failed"}}
@@ -42,15 +42,15 @@ class SeedCoverage(unittest.TestCase):
     def test_missing_and_outside_seeds(self):
         meta = {"10": {"result": "success"}, "13": {"result": "success"}, "note": {"result": "success"}}
         cov = results.seed_coverage(meta, start=10, count=3)
-        self.assertEqual(cov["evaluated"], 1)
-        self.assertEqual(cov["success"], 1)
-        self.assertEqual(cov["missing"], [11, 12])
-        self.assertEqual(cov["outside"], [13])
+        self.assertEqual((cov["evaluated"], cov["success"], cov["missing"], cov["outside"]), (1, 1, [11, 12], [13]))
 
 
 class CheckTransfer(unittest.TestCase):
-    def make_run(self, root: Path, seeds: dict, videos: list) -> Path:
-        run = root / "eval_result"
+    def setUp(self):
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def make_run(self, seeds: dict, videos: list) -> Path:
+        run = self.tmp / "eval_result"
         (run / "video").mkdir(parents=True)
         (run / "metadata.json").write_text(json.dumps(seeds))
         for name in videos:
@@ -58,26 +58,19 @@ class CheckTransfer(unittest.TestCase):
         return run
 
     def test_complete_transfer_has_no_problems(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run = self.make_run(Path(tmp), {"5": {"result": "success"}, "6": {"result": "failed"}},
-                                ["5_success.mp4", "6_failed.mp4"])
-            self.assertEqual(results.check_transfer(run), [])
+        self.assertEqual(results.check_transfer(self.make_run(TWO_SEEDS, ["5_success.mp4", "6_failed.mp4"])), [])
 
     def test_missing_video_is_a_problem(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            run = self.make_run(Path(tmp), {"5": {"result": "success"}, "6": {"result": "failed"}},
-                                ["5_success.mp4"])
-            problems = results.check_transfer(run)
-            self.assertEqual(len(problems), 1)
-            self.assertIn("video", problems[0])
+        problems = results.check_transfer(self.make_run(TWO_SEEDS, ["5_success.mp4"]))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("video", problems[0])
 
     def test_missing_or_broken_metadata_is_a_problem(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            # messages carry no absolute path, so the pod's and the local check can be compared
-            self.assertEqual(results.check_transfer(Path(tmp) / "nothing"), ["metadata.json missing"])
-            run = self.make_run(Path(tmp), {}, [])
-            (run / "metadata.json").write_text("{not json")
-            self.assertIn("unreadable", results.check_transfer(run)[0])
+        # messages carry no absolute path, so the pod's and the local check compare
+        self.assertEqual(results.check_transfer(self.tmp / "nothing"), ["metadata.json missing"])
+        run = self.make_run({}, [])
+        (run / "metadata.json").write_text("{not json")
+        self.assertIn("unreadable", results.check_transfer(run)[0])
 
 
 if __name__ == "__main__":

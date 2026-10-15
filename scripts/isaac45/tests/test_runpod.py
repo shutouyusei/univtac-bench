@@ -1,24 +1,31 @@
-"""Tests for scripts/isaac45/runpod/{runpod_api,launch,collect}.py: python3 -m unittest discover -s scripts/isaac45/tests"""
+"""Tests for scripts/isaac45/runpod and the pod-side job contract: python3 -m unittest discover -s scripts/isaac45/tests"""
 
+import datetime
 import io
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runpod"))
+ISAAC45 = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ISAAC45 / "runpod"))
 import collect  # noqa: E402
 import launch  # noqa: E402
+import results  # noqa: E402
 import runpod_api  # noqa: E402
 
+HEADER = ",".join(launch.FIELDS) + "\n"
+OK_META, OK_VIDEOS = {"5": {"result": "success"}}, ["5_success.mp4"]
 
-class FakeResponse(io.BytesIO):
-    def __enter__(self):
-        return self
 
-    def __exit__(self, *exc):
-        return False
+class TempDir(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
 
 
 class RunPodClient(unittest.TestCase):
@@ -26,22 +33,16 @@ class RunPodClient(unittest.TestCase):
         seen = {}
 
         def opener(request, timeout):
-            seen["url"], seen["method"] = request.full_url, request.get_method()
-            seen["auth"] = request.get_header("Authorization")
-            seen["body"] = json.loads(request.data)
-            return FakeResponse(b'{"id": "abc123"}')
+            seen.update(url=request.full_url, method=request.get_method(), auth=request.get_header("Authorization"),
+                        body=json.loads(request.data))
+            return io.BytesIO(b'{"id": "abc123"}')
 
-        client = runpod_api.RunPod("KEY", opener=opener)
-        pod = client.create_pod({"name": "x", "imageName": "img"})
+        pod = runpod_api.RunPod("KEY", opener=opener).create_pod({"name": "x", "imageName": "img"})
         self.assertEqual(pod["id"], "abc123")
-        self.assertEqual(seen["url"], "https://rest.runpod.io/v1/pods")
-        self.assertEqual(seen["method"], "POST")
-        self.assertEqual(seen["auth"], "Bearer KEY")
-        self.assertEqual(seen["body"], {"name": "x", "imageName": "img"})
+        self.assertEqual(seen, {"url": "https://rest.runpod.io/v1/pods", "method": "POST", "auth": "Bearer KEY",
+                                "body": {"name": "x", "imageName": "img"}})
 
     def test_network_errors_become_runpod_errors(self):
-        import urllib.error
-
         def opener(request, timeout):
             raise urllib.error.URLError("timed out")
 
@@ -49,8 +50,7 @@ class RunPodClient(unittest.TestCase):
             runpod_api.RunPod("KEY", opener=opener).create_pod({})
 
     def test_delete_returns_none_on_empty_body(self):
-        client = runpod_api.RunPod("KEY", opener=lambda request, timeout: FakeResponse(b""))
-        self.assertIsNone(client.delete_pod("abc123"))
+        self.assertIsNone(runpod_api.RunPod("KEY", opener=lambda r, timeout: io.BytesIO(b"")).delete_pod("abc123"))
 
     def test_ssh_endpoint(self):
         self.assertEqual(runpod_api.ssh_endpoint({"publicIp": "1.2.3.4", "portMappings": {"22": 10341}}),
@@ -67,29 +67,24 @@ class Jobs(unittest.TestCase):
     def test_make_and_parse_jobs_round_trip(self):
         jobs = launch.make_jobs(["lift_can"], ["univtac", "vision_only"], 1000000, 100, 50, "demo")
         self.assertEqual(len(jobs), 4)
-        text = launch.jobs_to_csv(jobs)
-        self.assertEqual(launch.parse_jobs(text), jobs)
+        self.assertEqual(launch.parse_jobs(launch.jobs_to_csv(jobs)), jobs)
 
     def test_parse_rejects_bad_rows(self):
-        header = "task,arm,start_seed,count,task_config\n"
-        for row in ["lift_can,both,0,10,demo", "lift_can,univtac,x,10,demo", "lift_can,univtac,0,0,demo"]:
+        for row in ["lift_can,both,0,10,demo", "lift_can,univtac,x,10,demo", "lift_can,univtac,0,0,demo",
+                    "lift_cam,univtac,0,10,demo", "lift_can,univtac,0,10,clen"]:
             with self.assertRaises(ValueError):
-                launch.parse_jobs(header + row + "\n")
-
-    def test_parse_rejects_unknown_task_or_task_config(self):
-        header = "task,arm,start_seed,count,task_config\n"
-        with self.assertRaises(ValueError):
-            launch.parse_jobs(header + "lift_cam,univtac,0,10,demo\n", task_configs={"demo"})
-        with self.assertRaises(ValueError):
-            launch.parse_jobs(header + "lift_can,univtac,0,10,clen\n", task_configs={"demo", "clean"})
-
-    def test_time_limit_follows_the_seed_count(self):
-        self.assertAlmostEqual(launch.limit_hours(count=90, episode_timeout_s=400), (600 + 400 * 90) / 3600 + 1.0)
+                launch.parse_jobs(HEADER + row + "\n", task_configs={"demo", "clean"})
 
     def test_parse_rejects_overlapping_seed_ranges(self):
-        text = "task,arm,start_seed,count,task_config\nlift_can,univtac,0,10,demo\nlift_can,univtac,5,10,demo\n"
         with self.assertRaises(ValueError):
-            launch.parse_jobs(text)
+            launch.parse_jobs(HEADER + "lift_can,univtac,0,10,demo\nlift_can,univtac,5,10,demo\n")
+
+    def test_time_limit_is_the_pod_run_limit_plus_start_up(self):
+        self.assertAlmostEqual(launch.limit_hours(count=90, episode_timeout_s=400), (600 + 400 * 90) / 3600 + 1.0)
+        env = {k: v for k, v in os.environ.items() if k != "EPISODE_TIMEOUT_S"}
+        shell = subprocess.run([sys.executable, str(ISAAC45 / "runpod/results.py"), "run-limit", "90"],
+                               capture_output=True, text=True, env=env, check=True).stdout
+        self.assertEqual(int(shell), results.run_limit_s(90))
 
     def test_pod_spec(self):
         job = launch.Job("lift_can", "univtac", 1000000, 50, "demo")
@@ -109,63 +104,78 @@ class Jobs(unittest.TestCase):
         self.assertNotIn("12.4", spec["allowedCudaVersions"])
 
 
+class PodJobFolder(TempDir):
+    """eval_released.sh writes where the collector looks: OUT_ROOT/<Job.key>/."""
+
+    JOB = launch.Job("lift_can", "univtac", 1000000, 10, "no_such_config")
+
+    def run_eval(self, job: launch.Job):
+        env = {**os.environ, "OUT_ROOT": str(self.tmp), "OMNI_KIT_ACCEPT_EULA": "YES"}
+        args = [str(getattr(job, f)) for f in launch.FIELDS]  # the same order launch puts into EVAL_JOB
+        return subprocess.run(["bash", str(ISAAC45 / "docker/eval_released.sh"), *args], env=env,
+                              capture_output=True, text=True)
+
+    def test_early_failure_writes_done_under_the_job_key(self):
+        self.assertEqual(self.run_eval(self.JOB).returncode, 2)
+        self.assertEqual((self.tmp / self.JOB.key / "DONE").read_text().strip(), "2")
+        self.assertTrue((self.tmp / self.JOB.key / "manifest.json").is_file())
+
+    def test_finished_job_is_not_run_again(self):
+        job = self.JOB
+        (self.tmp / job.key).mkdir()
+        (self.tmp / job.key / "DONE").write_text("0\n")
+        out = self.run_eval(job)
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("already done", out.stdout)
+        self.assertEqual((self.tmp / job.key / "DONE").read_text(), "0\n")
+
+
 class Decide(unittest.TestCase):
     def test_actions(self):
-        self.assertEqual(collect.decide(None, done=False, hours=0.1, limit_h=6), "lost")
-        self.assertEqual(collect.decide("TERMINATED", done=False, hours=0.1, limit_h=6), "lost")
-        self.assertEqual(collect.decide("RUNNING", done=True, hours=1, limit_h=6), "collect")
-        self.assertEqual(collect.decide("RUNNING", done=False, hours=1, limit_h=6), "wait")
-        self.assertEqual(collect.decide("RUNNING", done=False, hours=7, limit_h=6), "timeout")
-        self.assertEqual(collect.decide("EXITED", done=False, hours=1, limit_h=6), "exited")
+        for status, done, hours, wanted in [(None, False, 0.1, "lost"), ("TERMINATED", False, 0.1, "lost"),
+                                            ("RUNNING", True, 1, "collect"), ("RUNNING", False, 1, "wait"),
+                                            ("RUNNING", False, 7, "timeout"), ("EXITED", False, 1, "exited")]:
+            self.assertEqual(collect.decide(status, done=done, hours=hours, limit_h=6), wanted)
 
 
-def make_job(job: Path, metadata=None, videos=(), manifest=True, exit_code=0):
+def make_job(job: Path, metadata=None, videos=(), manifest=True, exit_code=0) -> Path:
     """A job folder as eval_released.sh leaves it (metadata None: upstream wrote no eval_result)."""
     job.mkdir(parents=True)
-    pod_check = ["metadata.json missing"]
     if metadata is not None:
         (job / "eval_result" / "video").mkdir(parents=True)
         (job / "eval_result" / "metadata.json").write_text(json.dumps(metadata))
         for name in videos:
             (job / "eval_result" / "video" / name).write_bytes(b"\0")
-        pod_check = []
     (job / "eval.log").write_text("log\n")
     if manifest:
-        cov = {"expected": 1, "evaluated": 1 if metadata else 0, "success": 1 if metadata else 0, "errors": 0,
-               "missing": [] if metadata else [5], "outside": []}
+        cov = results.seed_coverage(metadata or {}, 5, 1)
+        pod_check = [] if metadata is not None else ["metadata.json missing"]
         (job / "manifest.json").write_text(json.dumps({"transfer_check_on_pod": pod_check, "exit_code": exit_code,
                                                        "coverage": cov}))
     (job / "DONE").write_text(f"{exit_code}\n")
     return job
 
 
-def file_count(job: Path) -> int:
-    return sum(1 for p in job.rglob("*") if p.is_file() and p.name != "DONE")
-
-
-class VerifyCollected(unittest.TestCase):
+class VerifyCollected(TempDir):
     def test_complete_copy(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            job = make_job(Path(tmp) / "j", {"5": {"result": "success"}}, ["5_success.mp4"])
-            self.assertEqual(collect.verify_collected(job, remote_files=file_count(job)), [])
+        job = make_job(self.tmp / "j", OK_META, OK_VIDEOS)
+        self.assertEqual(collect.verify_collected(job, collect.count_files(job)), [])
 
     def test_faithful_copy_of_a_failed_eval_is_complete(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            job = make_job(Path(tmp) / "j", None, exit_code=2)
-            self.assertEqual(collect.verify_collected(job, remote_files=file_count(job)), [])
+        job = make_job(self.tmp / "j", None, exit_code=2)
+        self.assertEqual(collect.verify_collected(job, collect.count_files(job)), [])
 
-    def test_missing_manifest_or_file_count_mismatch(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            job = make_job(Path(tmp) / "j", {"5": {"result": "success"}}, ["5_success.mp4"], manifest=False)
-            self.assertTrue(any("manifest" in p for p in collect.verify_collected(job, file_count(job))))
-        with tempfile.TemporaryDirectory() as tmp:
-            job = make_job(Path(tmp) / "j", {"5": {"result": "success"}}, ["5_success.mp4"])
-            self.assertTrue(any("files" in p for p in collect.verify_collected(job, remote_files=9)))
+    def test_missing_manifest(self):
+        job = make_job(self.tmp / "j", OK_META, OK_VIDEOS, manifest=False)
+        self.assertTrue(any("manifest" in p for p in collect.verify_collected(job, collect.count_files(job))))
+
+    def test_file_count_mismatch(self):
+        job = make_job(self.tmp / "j", OK_META, OK_VIDEOS)
+        self.assertTrue(any("files" in p for p in collect.verify_collected(job, remote_files=9)))
 
     def test_video_lost_in_transfer(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            job = make_job(Path(tmp) / "j", {"5": {"result": "success"}}, [])
-            self.assertTrue(any("video" in p for p in collect.verify_collected(job, file_count(job))))
+        job = make_job(self.tmp / "j", OK_META, [])
+        self.assertTrue(any("video" in p for p in collect.verify_collected(job, collect.count_files(job))))
 
 
 class FakeClient:
@@ -184,7 +194,7 @@ class FakeClient:
 
 
 class FakeConnection:
-    """A pod whose POD_OUT is a local folder; pull copies like rsync -a."""
+    """A pod whose POD_OUT is a local folder; pull copies like rsync -a (minus the names in drop)."""
 
     def __init__(self, pod_out: Path, drop=()):
         self.pod_out, self.drop = pod_out, set(drop)
@@ -196,86 +206,71 @@ class FakeConnection:
         return (self._remote(remote_job) / "DONE").is_file()
 
     def count_files(self, remote_job):
-        return file_count(self._remote(remote_job))
+        return collect.count_files(self._remote(remote_job))
 
     def pull(self, remote, local: Path):
-        import shutil
         src = self._remote(remote)
         if src.is_dir():
-            shutil.copytree(src, local, dirs_exist_ok=True,
-                            ignore=lambda d, names: [n for n in names if n in self.drop])
+            shutil.copytree(src, local, dirs_exist_ok=True, ignore=lambda d, names: [n for n in names if n in self.drop])
         elif src.is_file():
             local.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, local)
         return True
 
 
-class Handle(unittest.TestCase):
+class Handle(TempDir):
     KEY = "lift_can_univtac_5_1"
 
-    def run_handle(self, tmp: Path, client, drop=(), limit_h=6.0, hours_old=0.5):
-        import datetime
-        created = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_old))
+    def run_handle(self, client, drop=(), limit_h=6.0, hours_old=0.5):
+        created = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_old)
         entry = {"key": self.KEY, "pod_id": "p1", "status": "launched", "limit_h": limit_h,
-                 "created_utc": created.strftime("%Y-%m-%dT%H:%M:%SZ")}
-        run_dir = tmp / "run"
+                 "created_utc": created.strftime(results.UTC_FORMAT)}
+        run_dir = self.tmp / "run"
         run_dir.mkdir()
-        args = type("Args", (), {"notify_cmd": "", "ssh_key": "k"})()
-        conn = FakeConnection(tmp / "pod", drop)
+        args = type("Args", (), {"notify_cmd": "", "ssh_key": "k", "max_hours": 6.0})()
+        conn = FakeConnection(self.tmp / "pod", drop)
         collect.handle(entry, client, run_dir, args, connect=lambda ip, port: conn)
         return entry, run_dir
 
     def test_complete_job_is_pulled_and_the_pod_deleted(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            make_job(tmp / "pod" / self.KEY, {"5": {"result": "success"}}, ["5_success.mp4"])
-            (tmp / "pod" / "pod_stdout.log").write_text("stdout\n")
-            client = FakeClient()
-            entry, run_dir = self.run_handle(tmp, client)
-            self.assertEqual(entry["status"], "collected")
-            self.assertEqual(client.calls, [("delete", "p1")])
-            self.assertTrue((run_dir / self.KEY / "eval_result" / "video" / "5_success.mp4").is_file())
-            self.assertTrue((run_dir / f"{self.KEY}.pod_stdout.log").is_file())
+        make_job(self.tmp / "pod" / self.KEY, OK_META, OK_VIDEOS)
+        (self.tmp / "pod" / "pod_stdout.log").write_text("stdout\n")
+        client = FakeClient()
+        entry, run_dir = self.run_handle(client)
+        self.assertEqual((entry["status"], client.calls), ("collected", [("delete", "p1")]))
+        self.assertTrue((run_dir / self.KEY / "eval_result" / "video" / "5_success.mp4").is_file())
+        self.assertTrue((run_dir / f"{self.KEY}.pod_stdout.log").is_file())
 
     def test_failed_eval_is_pulled_deleted_and_reported(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            make_job(tmp / "pod" / self.KEY, None, exit_code=2)
-            client = FakeClient()
-            entry, _ = self.run_handle(tmp, client)
-            self.assertEqual(entry["status"], "failed")
-            self.assertEqual(client.calls, [("delete", "p1")])
+        make_job(self.tmp / "pod" / self.KEY, None, exit_code=2)
+        client = FakeClient()
+        entry, _ = self.run_handle(client)
+        self.assertEqual((entry["status"], client.calls), ("failed", [("delete", "p1")]))
 
     def test_incomplete_copy_stops_instead_of_deleting(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            make_job(tmp / "pod" / self.KEY, {"5": {"result": "success"}}, ["5_success.mp4"])
-            client = FakeClient()
-            entry, _ = self.run_handle(tmp, client, drop={"5_success.mp4"})
-            self.assertEqual(entry["status"], "incomplete_copy")
-            self.assertEqual(client.calls, [("stop", "p1")])
+        make_job(self.tmp / "pod" / self.KEY, OK_META, OK_VIDEOS)
+        client = FakeClient()
+        entry, _ = self.run_handle(client, drop={"5_success.mp4"})
+        self.assertEqual((entry["status"], client.calls), ("incomplete_copy", [("stop", "p1")]))
 
-    def test_running_job_waits_and_overdue_job_is_stopped(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            (tmp / "pod" / self.KEY / "deploy").mkdir(parents=True)
-            client = FakeClient()
-            entry, _ = self.run_handle(tmp, client)
-            self.assertEqual((entry["status"], client.calls), ("launched", []))
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            (tmp / "pod" / self.KEY / "deploy" / "t").mkdir(parents=True)
-            (tmp / "pod" / self.KEY / "deploy" / "t" / "metadata.json").write_text("{}")
-            client = FakeClient()
-            entry, run_dir = self.run_handle(tmp, client, limit_h=1.0, hours_old=2.0)
-            self.assertEqual((entry["status"], client.calls), ("timeout", [("stop", "p1")]))
-            self.assertTrue((run_dir / self.KEY / "deploy" / "t" / "metadata.json").is_file())
+    def test_running_job_waits(self):
+        (self.tmp / "pod" / self.KEY / "deploy").mkdir(parents=True)
+        client = FakeClient()
+        entry, _ = self.run_handle(client)
+        self.assertEqual((entry["status"], client.calls), ("launched", []))
+
+    def test_overdue_job_is_pulled_and_stopped(self):
+        (self.tmp / "pod" / self.KEY / "deploy" / "t").mkdir(parents=True)
+        (self.tmp / "pod" / self.KEY / "deploy" / "t" / "metadata.json").write_text("{}")
+        client = FakeClient()
+        entry, run_dir = self.run_handle(client, limit_h=1.0, hours_old=2.0)
+        self.assertEqual((entry["status"], client.calls), ("timeout", [("stop", "p1")]))
+        self.assertTrue((run_dir / self.KEY / "deploy" / "t" / "metadata.json").is_file())
 
     def test_gone_pod_is_lost(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            client = FakeClient(status=None)
-            entry, _ = self.run_handle(Path(tmp), client)
-            self.assertEqual((entry["status"], client.calls), ("lost", []))
+        client = FakeClient(status=None)
+        entry, _ = self.run_handle(client)
+        self.assertEqual((entry["status"], client.calls), ("lost", []))
 
 
 if __name__ == "__main__":
