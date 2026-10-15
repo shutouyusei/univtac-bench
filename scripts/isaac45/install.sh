@@ -12,7 +12,7 @@
 # ~/.cache/univtac-isaac45 (vcpkg and its own binary cache) is touched.
 #
 # Usage: bash scripts/isaac45/install.sh [--from STEP] [--only STEP] [--locked] [--check]
-#   STEP: assets env isaacsim isaaclab curobo tacex vcpkg uipc extras
+#   STEP: assets env isaacsim isaaclab curobo tacex vcpkg uipc extras (--only skips the final check)
 #   --locked: also constrain every pip step to the versions recorded in requirements.lock
 #             (its plain name==version lines), so a rebuild gets the recorded environment.
 #   UNIVTAC45_CUDA_ARCH: SM versions to build for, ';'-separated (default 120; "89;120" also runs on
@@ -248,4 +248,10 @@ if want extras; then
     "${PIP[@]}" install numpy==1.26.4
 fi
 
+# A single step leaves the environment incomplete on purpose (e.g. one Docker layer per step); the
+# full-environment check is for whole runs, or --check afterwards.
+if [[ -n "${ONLY}" ]]; then
+    echo "[only ${ONLY}] done (run --check for the full-environment check)"
+    exit 0
+fi
 check
