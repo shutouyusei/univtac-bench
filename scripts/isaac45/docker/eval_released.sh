@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Evaluate one released ACT checkpoint with upstream's scripts/eval_policy.py (inside the image).
 #
-# Usage: eval_released.sh <task> <univtac|vision_only> <start_seed> <count> <task_config>
-# The checkpoint is linked under the train config named in its own log.log (the authors' setup).
+# Usage: eval_released.sh <task> <univtac|vision_only> <start_seed> <count> <task_config|auto>
+# Train config, and with "auto" the task config, are the ones in the checkpoint's own log.log (the authors' eval).
 # Env: OUT_ROOT and OMNI_KIT_ACCEPT_EULA (required), UNIVTAC45_RENDER_OVERRIDES, EPISODE_TIMEOUT_S.
 # Writes OUT_ROOT/<task>_<arm>_<start>_<count>/: eval_result/, eval.log, manifest.json, and DONE (exit code)
 # last on every exit, so a collector never waits on a dead job. A job whose DONE exists is not run again.
@@ -39,9 +39,12 @@ trap finish EXIT
 fail() { echo "$*" >&2; exit 2; }
 [[ "${ARM}" == "univtac" || "${ARM}" == "vision_only" ]] || fail "arm must be univtac or vision_only, not '${ARM}'"
 [[ "${START}" =~ ^[0-9]+$ && "${COUNT}" =~ ^[1-9][0-9]*$ ]] || fail "start_seed / count must be integers"
-[[ -f "${ROOT}/task_config/${TASK_CONFIG}.yml" ]] || fail "no task_config/${TASK_CONFIG}.yml"
 [[ -f "${CKPT}/policy_last.ckpt" && -f "${CKPT}/dataset_stats.pkl" ]] || fail "no released checkpoint at ${CKPT}"
 [[ -n "${OMNI_KIT_ACCEPT_EULA:-}" ]] || fail "OMNI_KIT_ACCEPT_EULA is not set"
+if [[ "${TASK_CONFIG}" == "auto" ]]; then
+    TASK_CONFIG="$(python3 "${RESULTS}" task-config "${CKPT}/log.log")" || fail "cannot read the task config"
+fi
+[[ -f "${ROOT}/task_config/${TASK_CONFIG}.yml" ]] || fail "no task_config/${TASK_CONFIG}.yml"
 
 TRAIN_CONFIG="$(python3 "${RESULTS}" train-config "${CKPT}/log.log")" || { TRAIN_CONFIG="unknown"; fail "cannot read the train config"; }
 DST="${ROOT}/policy/ACT/act_ckpt/act-${TASK}/${TASK_CONFIG}-50/${TRAIN_CONFIG}"

@@ -1,6 +1,6 @@
 """Start one RunPod pod per evaluation job (jobs.csv rows: task, arm, start_seed, count, task_config).
 
-    python3 launch.py jobs --tasks lift_can --arms univtac vision_only --count 100 --chunk 50 --task-config demo > jobs.csv
+    python3 launch.py jobs --tasks lift_can --arms univtac vision_only --count 100 --chunk 50 > jobs.csv
     python3 launch.py start --run-id <id> --jobs jobs.csv --image <ref@sha256:...> [--registry-auth-id ID] [--dry-run]
 
 start needs RUNPOD_API_KEY and OMNI_KIT_ACCEPT_EULA, gives each pod your SSH public key, and writes
@@ -28,6 +28,7 @@ CUDA_VERSIONS = ["12.8", "12.9", "13.0"]  # drivers that run the image's CUDA 12
 DEFAULT_RECORDS = Path.home() / "Desktop" / "Robotics" / "records" / "runpod"
 REPO = Path(__file__).resolve().parents[3]
 STARTUP_MARGIN_H = 1.0  # image pull + Isaac start-up before the run limit counts
+AUTO = "auto"  # task config: the one in the checkpoint's own eval log (eval_released.sh resolves it)
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,7 @@ def _parse_row(row: dict, earlier: list, task_configs) -> Job:
               row["task_config"].strip())
     if job.task not in TASKS:
         raise ValueError(f"task must be one of {TASKS}, not {job.task!r}")
-    if task_configs is not None and job.task_config not in task_configs:
+    if task_configs is not None and job.task_config not in {*task_configs, AUTO}:
         raise ValueError(f"no task config {job.task_config!r} (have {sorted(task_configs)})")
     if job.arm not in ARMS:
         raise ValueError(f"arm must be one of {ARMS}, not {job.arm!r}")
@@ -199,7 +200,7 @@ def main(argv=None) -> int:
     jp.add_argument("--start", type=int, default=1000000)
     jp.add_argument("--count", type=int, default=100)
     jp.add_argument("--chunk", type=int, default=0, help="seeds per pod (0: a whole task/arm per pod)")
-    jp.add_argument("--task-config", required=True)
+    jp.add_argument("--task-config", default=AUTO, help=f"task config name, or {AUTO}: the checkpoint log's")
     sp = sub.add_parser("start", help="create the pods of a jobs.csv")
     sp.add_argument("--run-id", required=True)
     sp.add_argument("--jobs", required=True)

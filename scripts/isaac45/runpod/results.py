@@ -1,6 +1,6 @@
 """Eval-output helpers shared by the pod (eval_released.sh) and the collector. Stdlib only.
 
-    python3 results.py train-config <checkpoint>/log.log
+    python3 results.py train-config|task-config <checkpoint>/log.log
     python3 results.py run-limit <count>          (seconds; EPISODE_TIMEOUT_S from the environment)
     python3 results.py manifest --out manifest.json ...
 """
@@ -14,7 +14,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-TRAIN_CONFIG_RE = re.compile(r'"train_config":\s*"([^"]+)"')
 UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 RUN_OVERHEAD_S = 600
 EPISODE_TIMEOUT_S = 400
@@ -42,12 +41,20 @@ def run_limit_s(count: int, episode_timeout_s: int = EPISODE_TIMEOUT_S) -> int:
     return RUN_OVERHEAD_S + episode_timeout_s * count
 
 
-def train_config_from_log(text: str) -> str:
-    """Train config named in a released checkpoint's log.log."""
-    match = TRAIN_CONFIG_RE.search(text)
+def _eval_config(key: str, text: str) -> str:
+    """A value of the eval config block in a released checkpoint's log.log (the authors' evaluation)."""
+    match = re.search(rf'"{key}":\s*"([^"]+)"', text)
     if match is None:
-        raise ValueError('no "train_config" in the checkpoint eval log')
+        raise ValueError(f'no "{key}" in the checkpoint eval log')
     return match.group(1)
+
+
+def train_config_from_log(text: str) -> str:
+    return _eval_config("train_config", text)
+
+
+def task_config_from_log(text: str) -> str:
+    return _eval_config("task_config", text)
 
 
 def recorded_seeds(metadata: dict) -> list:
@@ -130,6 +137,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("train-config").add_argument("log")
+    sub.add_parser("task-config").add_argument("log")
     sub.add_parser("run-limit").add_argument("count", type=int)
     mf = sub.add_parser("manifest")
     for name in ("out", "task", "arm", "task-config", "train-config", "started", "run-dir", "checkpoint-sha256"):
@@ -139,9 +147,9 @@ def main(argv=None) -> int:
     mf.add_argument("--build-info", default="/workspace/build_info.json")
     args = parser.parse_args(argv)
 
-    if args.command == "train-config":
+    if args.command in ("train-config", "task-config"):
         try:
-            print(train_config_from_log(Path(args.log).read_text()))
+            print(_eval_config(args.command.replace("-", "_"), Path(args.log).read_text()))
         except (OSError, ValueError) as error:
             print(error, file=sys.stderr)
             return 1

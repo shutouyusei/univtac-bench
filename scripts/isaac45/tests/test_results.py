@@ -19,13 +19,15 @@ RELEASED_LOG_HEAD = """[2026-03-24 11:09:26] Task Name: lift_can
 TWO_SEEDS = {"5": {"result": "success"}, "6": {"result": "failed"}}
 
 
-class TrainConfigFromLog(unittest.TestCase):
-    def test_reads_the_released_eval_config(self):
+class EvalConfigFromLog(unittest.TestCase):
+    def test_reads_train_and_task_config_of_the_released_eval(self):
         self.assertEqual(results.train_config_from_log(RELEASED_LOG_HEAD), "train_config_all")
+        self.assertEqual(results.task_config_from_log(RELEASED_LOG_HEAD), "demo")
 
     def test_missing_key_raises(self):
-        with self.assertRaises(ValueError):
-            results.train_config_from_log("[2026-03-24] Task Name: lift_can\n")
+        for read in (results.train_config_from_log, results.task_config_from_log):
+            with self.assertRaises(ValueError):
+                read("[2026-03-24] Task Name: lift_can\n")
 
 
 class SeedCoverage(unittest.TestCase):
