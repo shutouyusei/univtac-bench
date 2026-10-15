@@ -7,6 +7,12 @@
 # for SM 8.9 (RTX 40 native; its PTX runs on RTX 50), as no GPU is visible at build time. The released checkpoints
 # come from the official download script. The build fails if any file outside scripts/isaac45 differs
 # from the upstream commit, so the image evaluates upstream's code.
+
+# Source archives libuipc's vcpkg build may take from a local vcpkg downloads folder (build.sh passes one as the build
+# context "vcpkg-downloads") instead of fetching them; vcpkg checks each file's SHA512 against its port, so only the
+# same sources are used. Empty by default: everything is downloaded.
+FROM scratch AS vcpkg-downloads
+
 FROM nvidia/cuda:12.8.1-base-ubuntu24.04
 
 ARG MINIFORGE_VERSION=26.3.2-3
@@ -79,7 +85,12 @@ RUN git config --global --add safe.directory "${UNIVTAC_ROOT}" \
 RUN bash scripts/isaac45/install.sh --locked --only assets
 RUN --mount=type=cache,target=/root/.cache/pip bash scripts/isaac45/install.sh --locked --only tacex
 RUN bash scripts/isaac45/install.sh --locked --only vcpkg
-RUN --mount=type=cache,target=/root/.cache/pip bash scripts/isaac45/install.sh --locked --only uipc
+RUN --mount=type=bind,from=vcpkg-downloads,target=/vcpkg-seed \
+    --mount=type=cache,target=/root/.cache/pip \
+    mkdir -p /root/.cache/univtac-isaac45/vcpkg/downloads \
+    && find /vcpkg-seed -maxdepth 1 -type f -exec cp -n {} /root/.cache/univtac-isaac45/vcpkg/downloads/ \; \
+    && echo "[vcpkg] $(find /vcpkg-seed -maxdepth 1 -type f | wc -l) source archives seeded" \
+    && bash scripts/isaac45/install.sh --locked --only uipc
 RUN --mount=type=cache,target=/root/.cache/pip bash scripts/isaac45/install.sh --locked --only extras
 RUN bash scripts/isaac45/install.sh --check
 

@@ -12,10 +12,13 @@
 # Build arguments of the Dockerfile can be overridden through the environment of the same name
 # (UNIVTAC45_BUILD_JOBS, UPSTREAM_COMMIT, DOWNLOAD_REVISION, MINIFORGE_VERSION). The SM version stays the
 # Dockerfile's 89: a UNIVTAC45_CUDA_ARCH=120 exported for local builds would make an image RTX 40s cannot run.
+# VCPKG_DOWNLOAD_SEED (default: the local install's ~/.cache/univtac-isaac45/vcpkg/downloads, if present) hands
+# libuipc's vcpkg build the source archives already downloaded once, so a GitHub archive outage does not stop the
+# build; vcpkg accepts a file only if its SHA512 matches the port. Set it to "" to download everything.
 set -Eeuo pipefail
 
 if [[ $# -lt 2 || $# -gt 3 || ( $# -eq 3 && "$3" != "--push" ) ]]; then
-    sed -n '2,14p' "$0" >&2
+    sed -n '2,17p' "$0" >&2
     exit 2
 fi
 COMMIT="$1"
@@ -35,6 +38,11 @@ build_args=()
 for name in UNIVTAC45_BUILD_JOBS UPSTREAM_COMMIT DOWNLOAD_REVISION MINIFORGE_VERSION; do
     if [[ -n "${!name:-}" ]]; then build_args+=(--build-arg "${name}=${!name}"); fi
 done
+SEED="${VCPKG_DOWNLOAD_SEED-${HOME}/.cache/univtac-isaac45/vcpkg/downloads}"
+if [[ -n "${SEED}" && -d "${SEED}" ]]; then
+    echo "[build] vcpkg source archives from ${SEED} ($(find "${SEED}" -maxdepth 1 -type f | wc -l) files)"
+    build_args+=(--build-context "vcpkg-downloads=${SEED}")
+fi
 
 docker build \
     --file "${CONTEXT}/univtac/scripts/isaac45/docker/Dockerfile" \
