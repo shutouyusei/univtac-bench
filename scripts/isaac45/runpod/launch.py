@@ -104,7 +104,7 @@ def parse_jobs(text: str, task_configs=None) -> list:
 
 
 def pod_spec(job: Job, run_id: str, image: str, gpu: str, cloud: str, registry_auth_id: str, public_key: str,
-             extra_env: dict, container_disk_gb: int = 60, volume_gb: int = 10) -> dict:
+             extra_env: dict, container_disk_gb: int = 100, volume_gb: int = 10) -> dict:
     spec = {
         "name": f"{run_id}-{job.task}-{job.arm}-{job.start_seed}",
         "imageName": image,
@@ -206,11 +206,11 @@ def main(argv=None) -> int:
     sp.add_argument("--image", required=True, help="image reference, preferably by digest")
     sp.add_argument("--registry-auth-id", default="", help="RunPod registry auth id (private image)")
     sp.add_argument("--gpu", default="NVIDIA GeForce RTX 4090")
-    sp.add_argument("--cloud", default="SECURE", choices=["SECURE", "COMMUNITY"])
+    sp.add_argument("--cloud", default="COMMUNITY", choices=["SECURE", "COMMUNITY"])
     sp.add_argument("--render-overrides", default="", help="UNIVTAC45_RENDER_OVERRIDES for every pod")
     sp.add_argument("--episode-timeout-s", type=int, default=EPISODE_TIMEOUT_S,
                     help="per-episode budget on the pod; also sets each pod's limit in the collector")
-    sp.add_argument("--container-disk-gb", type=int, default=60)
+    sp.add_argument("--container-disk-gb", type=int, default=100, help="the image alone is ~56 GB")
     sp.add_argument("--volume-gb", type=int, default=10)
     sp.add_argument("--ssh-public-key", default="~/.ssh/id_ed25519.pub")
     sp.add_argument("--records", default=str(DEFAULT_RECORDS))
