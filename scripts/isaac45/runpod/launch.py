@@ -138,6 +138,20 @@ def find_created(client, name: str):
     return pods[0] if pods else None
 
 
+def try_create(client, entry: dict) -> bool:
+    """Create the pod of entry["spec"]; on success entry becomes "launched", else keeps the error."""
+    try:
+        pod = client.create_pod(entry["spec"])
+    except runpod_api.RunPodError as error:
+        pod = find_created(client, entry["spec"]["name"])
+        if pod is None:
+            entry.update(pod_id=None, status="not_created", error=str(error))
+            return False
+    entry.pop("error", None)
+    entry.update(pod_id=pod["id"], status="launched", created_utc=utc_now(), cost_per_hr=pod.get("costPerHr"))
+    return True
+
+
 def cmd_start(args) -> int:
     try:
         jobs = parse_jobs(Path(args.jobs).read_text(), task_configs=task_config_names())
@@ -170,20 +184,13 @@ def cmd_start(args) -> int:
               "render_overrides": args.render_overrides or "", "started_utc": utc_now(), "pods": []}
     write_json(pods_file, record)
     for job, spec in specs:
-        entry = {"job": asdict(job), "key": job.key}
-        try:
-            pod = client.create_pod(spec)
-        except runpod_api.RunPodError as error:
-            pod = find_created(client, spec["name"])
-            if pod is None:
-                print(f"[launch] {job.key}: {error}", file=sys.stderr)
-                entry.update(pod_id=None, status="not_created", error=str(error))
-            else:
-                print(f"[launch] {job.key}: create reported '{error}', but pod {pod['id']} exists; tracking it")
-        if pod is not None:
-            print(f"[launch] {job.key}: pod {pod['id']} ({pod.get('costPerHr', '?')}/h)")
-            entry.update(pod_id=pod["id"], status="launched", created_utc=utc_now(), cost_per_hr=pod.get("costPerHr"),
-                         limit_h=round(limit_hours(job.count, args.episode_timeout_s), 2))
+        # spec (no secrets) and limit_h are kept so collect.py --relaunch can create a pod that could not be made now
+        entry = {"job": asdict(job), "key": job.key, "spec": spec,
+                 "limit_h": round(limit_hours(job.count, args.episode_timeout_s), 2)}
+        if try_create(client, entry):
+            print(f"[launch] {job.key}: pod {entry['pod_id']} ({entry['cost_per_hr']}/h)")
+        else:
+            print(f"[launch] {job.key}: {entry['error'][:160]}", file=sys.stderr)
         record["pods"].append(entry)
         write_json(pods_file, record)
     created = sum(p["pod_id"] is not None for p in record["pods"])

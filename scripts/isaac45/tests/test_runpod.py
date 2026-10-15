@@ -54,6 +54,17 @@ class RunPodClient(unittest.TestCase):
         with self.assertRaises(runpod_api.RunPodError):
             runpod_api.RunPod("KEY", opener=opener).create_pod({})
 
+    def test_balance_reads_the_account_through_graphql(self):
+        seen = {}
+
+        def opener(request, timeout):
+            seen.update(url=request.full_url, body=json.loads(request.data))
+            return io.BytesIO(b'{"data": {"myself": {"clientBalance": 12.5}}}')
+
+        self.assertEqual(runpod_api.RunPod("KEY", opener=opener).balance(), 12.5)
+        self.assertEqual(seen["url"], runpod_api.GRAPHQL_URL)
+        self.assertIn("clientBalance", seen["body"]["query"])
+
     def test_delete_returns_none_on_empty_body(self):
         self.assertIsNone(runpod_api.RunPod("KEY", opener=lambda r, timeout: io.BytesIO(b"")).delete_pod("abc123"))
 
@@ -285,6 +296,82 @@ class Handle(TempDir):
         client = FakeClient(status=None)
         entry, _ = self.run_handle(client)
         self.assertEqual((entry["status"], client.calls), ("lost", []))
+
+
+class RelaunchClient(FakeClient):
+    """FakeClient that can create pods (or have none available) and report a balance."""
+
+    def __init__(self, balance=10.0, available=True):
+        super().__init__()
+        self.money, self.available, self.created = balance, available, 0
+
+    def balance(self):
+        return self.money
+
+    def create_pod(self, spec):
+        if not self.available:
+            raise runpod_api.RunPodError("POST /pods: HTTP 500 no instances currently available")
+        self.created += 1
+        return {"id": f"new{self.created}", "costPerHr": 0.34}
+
+    def list_pods(self, name=None):
+        return []
+
+
+class Relaunch(TempDir):
+    ARGS = dict(max_pods=2, min_balance_usd=4.0, stop_balance_usd=1.5, max_attempts=3, notify_cmd="")
+
+    def record(self, *statuses):
+        pods = []
+        for i, status in enumerate(statuses):
+            entry = {"key": f"job{i}", "status": status, "spec": {"name": f"run-job{i}"}, "limit_h": 2.0}
+            if status == "launched":
+                entry.update(pod_id=f"old{i}", created_utc=results.utc_now())
+            pods.append(entry)
+        return {"pods": pods}
+
+    def run_pass(self, record, client):
+        collect.relaunch_pass(record, client, type("Args", (), self.ARGS)(), self.tmp)
+        return [e["status"] for e in record["pods"]]
+
+    def test_guard(self):
+        self.assertEqual(collect.launch_guard(1, 2, 10.0, 4.0), "")
+        self.assertIn("max", collect.launch_guard(2, 2, 10.0, 4.0))
+        self.assertIn("balance", collect.launch_guard(0, 2, 3.0, 4.0))
+
+    def test_creates_waiting_jobs_up_to_the_pod_cap(self):
+        record = self.record("launched", "not_created", "not_created")
+        client = RelaunchClient()
+        self.assertEqual(self.run_pass(record, client), ["launched", "launched", "not_created"])
+        self.assertEqual((record["pods"][1]["pod_id"], record["pods"][1]["attempts"]), ("new1", 1))
+
+    def test_no_instances_keeps_the_job_waiting(self):
+        record = self.record("not_created")
+        self.assertEqual(self.run_pass(record, RelaunchClient(available=False)), ["not_created"])
+        self.assertIn("no instances", record["pods"][0]["error"])
+
+    def test_low_balance_creates_nothing(self):
+        record = self.record("not_created")
+        client = RelaunchClient(balance=3.0)
+        self.assertEqual((self.run_pass(record, client), client.created), (["not_created"], 0))
+
+    def test_balance_below_the_stop_line_stops_running_pods(self):
+        record = self.record("launched", "not_created")
+        client = RelaunchClient(balance=1.0)
+        self.assertEqual(self.run_pass(record, client), ["stopped_low_balance", "not_created"])
+        self.assertEqual((client.calls, client.created), ([("stop", "old0")], 0))
+
+    def test_host_failure_is_moved_aside_and_requeued_until_the_attempt_cap(self):
+        record = self.record("failed", "failed", "failed")
+        for entry, attempts in zip(record["pods"], (1, 3, 1)):
+            entry.update(evaluated=0, attempts=attempts)
+        record["pods"][2]["evaluated"] = 40  # the eval itself ran: not a host failure
+        (self.tmp / "job0").mkdir()
+        (self.tmp / "job0" / "DONE").write_text("139\n")
+        statuses = self.run_pass(record, RelaunchClient(available=False))
+        self.assertEqual(statuses, ["not_created", "failed", "failed"])
+        self.assertTrue((self.tmp / "job0.attempt1" / "DONE").is_file())
+        self.assertFalse((self.tmp / "job0").exists())
 
 
 if __name__ == "__main__":

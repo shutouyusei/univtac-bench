@@ -1,4 +1,4 @@
-"""Minimal stdlib client for RunPod's REST API (pods: create, get, list, stop, delete)."""
+"""Minimal stdlib client for RunPod's API (REST pods: create, get, list, stop, delete; GraphQL: account balance)."""
 
 import json
 import urllib.error
@@ -6,6 +6,7 @@ import urllib.parse
 import urllib.request
 
 BASE_URL = "https://rest.runpod.io/v1"
+GRAPHQL_URL = "https://api.runpod.io/graphql"
 USER_AGENT = "univtac-bench-runpod/1.0"  # RunPod's Cloudflare front rejects urllib's default (HTTP 403, code 1010)
 
 
@@ -20,8 +21,8 @@ class RunPod:
         self.api_key = api_key
         self.opener = opener
 
-    def _call(self, method: str, path: str, body=None, query=None):
-        url = BASE_URL + path + ("?" + urllib.parse.urlencode(query) if query else "")
+    def _call(self, method: str, path: str, body=None, query=None, base_url: str = BASE_URL):
+        url = base_url + path + ("?" + urllib.parse.urlencode(query) if query else "")
         data = None if body is None else json.dumps(body).encode()
         headers = {"Authorization": f"Bearer {self.api_key}", "User-Agent": USER_AGENT}
         if data is not None:
@@ -61,6 +62,14 @@ class RunPod:
 
     def delete_pod(self, pod_id: str):
         return self._call("DELETE", f"/pods/{pod_id}")
+
+    def balance(self) -> float:
+        """Prepaid account balance in USD."""
+        out = self._call("POST", "", body={"query": "query { myself { clientBalance } }"}, base_url=GRAPHQL_URL) or {}
+        try:
+            return float(out["data"]["myself"]["clientBalance"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise RunPodError(f"balance: unexpected response {str(out)[:200]}") from error
 
 
 def ssh_endpoint(pod: dict):
