@@ -200,7 +200,8 @@ def main(argv=None) -> int:
     jp.add_argument("--start", type=int, default=1000000)
     jp.add_argument("--count", type=int, default=100)
     jp.add_argument("--chunk", type=int, default=0, help="seeds per pod (0: a whole task/arm per pod)")
-    jp.add_argument("--task-config", default=AUTO, help=f"task config name, or {AUTO}: the checkpoint log's")
+    jp.add_argument("--task-config", default="clean",
+                    help=f"task config name, or {AUTO}: the one in each checkpoint's log")
     sp = sub.add_parser("start", help="create the pods of a jobs.csv")
     sp.add_argument("--run-id", required=True)
     sp.add_argument("--jobs", required=True)

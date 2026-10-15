@@ -80,14 +80,14 @@ class Jobs(unittest.TestCase):
             with self.assertRaises(ValueError):
                 launch.parse_jobs(HEADER + row + "\n", task_configs={"demo", "clean"})
 
-    def test_auto_task_config_is_valid_and_the_jobs_default(self):
+    def test_auto_task_config_is_valid_and_clean_is_the_jobs_default(self):
         self.assertEqual(launch.parse_jobs(HEADER + "lift_can,univtac,0,10,auto\n", task_configs={"demo"})[0].task_config,
                          "auto")
         args = ["jobs", "--tasks", "lift_can", "--arms", "univtac", "--count", "10"]
         out = io.StringIO()
         with unittest.mock.patch("sys.stdout", out):
             launch.main(args)
-        self.assertEqual(launch.parse_jobs(out.getvalue())[0].task_config, "auto")
+        self.assertEqual(launch.parse_jobs(out.getvalue())[0].task_config, "clean")
 
     def test_parse_rejects_overlapping_seed_ranges(self):
         with self.assertRaises(ValueError):
