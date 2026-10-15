@@ -35,12 +35,16 @@ class RunPodClient(unittest.TestCase):
         def opener(request, timeout):
             seen.update(url=request.full_url, method=request.get_method(), auth=request.get_header("Authorization"),
                         body=json.loads(request.data))
+            seen["agent"] = request.get_header("User-agent")
             return io.BytesIO(b'{"id": "abc123"}')
 
         pod = runpod_api.RunPod("KEY", opener=opener).create_pod({"name": "x", "imageName": "img"})
         self.assertEqual(pod["id"], "abc123")
+        agent = seen.pop("agent")
         self.assertEqual(seen, {"url": "https://rest.runpod.io/v1/pods", "method": "POST", "auth": "Bearer KEY",
                                 "body": {"name": "x", "imageName": "img"}})
+        # RunPod's Cloudflare front rejects urllib's default "Python-urllib/x.y" (HTTP 403, error code 1010)
+        self.assertTrue(agent and not agent.startswith("Python-urllib"))
 
     def test_network_errors_become_runpod_errors(self):
         def opener(request, timeout):

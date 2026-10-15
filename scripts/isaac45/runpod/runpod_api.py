@@ -6,6 +6,7 @@ import urllib.parse
 import urllib.request
 
 BASE_URL = "https://rest.runpod.io/v1"
+USER_AGENT = "univtac-bench-runpod/1.0"  # RunPod's Cloudflare front rejects urllib's default (HTTP 403, code 1010)
 
 
 class RunPodError(RuntimeError):
@@ -22,7 +23,7 @@ class RunPod:
     def _call(self, method: str, path: str, body=None, query=None):
         url = BASE_URL + path + ("?" + urllib.parse.urlencode(query) if query else "")
         data = None if body is None else json.dumps(body).encode()
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        headers = {"Authorization": f"Bearer {self.api_key}", "User-Agent": USER_AGENT}
         if data is not None:
             headers["Content-Type"] = "application/json"
         try:
