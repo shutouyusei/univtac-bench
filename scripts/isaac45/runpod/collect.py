@@ -230,6 +230,7 @@ def main(argv=None) -> int:
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--relaunch-hours", type=float, default=6.0)
     args = parser.parse_args(argv)
+    sys.stdout.reconfigure(line_buffering=True)  # progress lines reach a redirected log as they happen
 
     run_dir = Path(args.records) / args.run_id
     pods_file = run_dir / "pods.json"
