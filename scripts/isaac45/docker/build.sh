@@ -10,7 +10,7 @@
 # (e.g. `set -a; source .env; set +a`), pushes, logs out again, and prints the pushed digest, which is
 # what a pod should run.
 # Build arguments of the Dockerfile can be overridden through the environment of the same name
-# (UNIVTAC45_BUILD_JOBS, UPSTREAM_COMMIT, DOWNLOAD_REVISION, MINIFORGE_VERSION). The SM version stays the
+# (UNIVTAC45_BUILD_JOBS, UPSTREAM_COMMIT, CHECKPOINT_REVISION, MINIFORGE_VERSION). The SM version stays the
 # Dockerfile's 89: a UNIVTAC45_CUDA_ARCH=120 exported for local builds would make an image RTX 40s cannot run.
 # VCPKG_DOWNLOAD_SEED (default: the local install's ~/.cache/univtac-isaac45/vcpkg/downloads, if present) hands
 # libuipc's vcpkg build the source archives already downloaded once, so a GitHub archive outage does not stop the
@@ -35,7 +35,7 @@ git clone -q --no-local --no-checkout "${REPO}" "${CONTEXT}/univtac"
 git -C "${CONTEXT}/univtac" checkout -q --detach "${SHA}"
 
 build_args=()
-for name in UNIVTAC45_BUILD_JOBS UPSTREAM_COMMIT DOWNLOAD_REVISION MINIFORGE_VERSION; do
+for name in UNIVTAC45_BUILD_JOBS UPSTREAM_COMMIT CHECKPOINT_REVISION MINIFORGE_VERSION; do
     if [[ -n "${!name:-}" ]]; then build_args+=(--build-arg "${name}=${!name}"); fi
 done
 SEED="${VCPKG_DOWNLOAD_SEED-${HOME}/.cache/univtac-isaac45/vcpkg/downloads}"

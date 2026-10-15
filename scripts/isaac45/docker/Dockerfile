@@ -5,8 +5,8 @@
 #
 # The environment is the one scripts/isaac45/install.sh --locked builds locally, run one step per layer,
 # for SM 8.9 (RTX 40 native; its PTX runs on RTX 50), as no GPU is visible at build time. The released checkpoints
-# come from the official download script. The build fails if any file outside scripts/isaac45 differs
-# from the upstream commit, so the image evaluates upstream's code.
+# come from the release's HuggingFace copy at a fixed commit. The build fails if any file outside scripts/isaac45
+# differs from the upstream commit, so the image evaluates upstream's code.
 
 # Source archives libuipc's vcpkg build may take from a local vcpkg downloads folder (build.sh passes one as the build
 # context "vcpkg-downloads") instead of fetching them; vcpkg checks each file's SHA512 against its port, so only the
@@ -19,7 +19,8 @@ ARG MINIFORGE_VERSION=26.3.2-3
 ARG UNIVTAC45_CUDA_ARCH=89
 ARG UNIVTAC45_BUILD_JOBS=8
 ARG UPSTREAM_COMMIT=0dafa10262e22f486f160a55d6f11aeab12d8e7b
-ARG DOWNLOAD_REVISION=master
+ARG CHECKPOINT_REPO=byml/UniVTAC
+ARG CHECKPOINT_REVISION=e1aee7b0c95543b535e0146b2de3ee1bc6ddaabd
 
 ENV DEBIAN_FRONTEND=noninteractive \
     NVIDIA_DRIVER_CAPABILITIES=all \
@@ -54,14 +55,17 @@ RUN curl -fsSL -o /tmp/miniforge.sh \
 WORKDIR ${UNIVTAC_ROOT}
 
 # Released checkpoints first: they do not depend on the code, so code changes keep this layer.
-# modelscope (the downloader) lives in its own environment, outside the locked UniVTAC45 one.
-COPY data/download.sh data/download.sh
+# The release has two official copies (README: HuggingFace and ModelScope) with the same policy weights. The
+# ModelScope one, which upstream's data/download.sh fetches, has no dataset_stats.pkl for insert_hole and lift_bottle,
+# which evaluation needs, and other eval logs for put_bottle_in_shelf; the HuggingFace one is complete. The downloader
+# (huggingface_hub) lives in its own environment, outside the locked UniVTAC45 one.
 RUN conda create -y -q -n download python=3.11 pip \
-    && conda run -n download python -m pip install -q --no-cache-dir modelscope \
-    && PATH="${CONDA_DIR}/envs/download/bin:${PATH}" DOWNLOAD_REVISION="${DOWNLOAD_REVISION}" \
-        bash data/download.sh --checkpoint \
+    && conda run -n download python -m pip install -q --no-cache-dir huggingface_hub \
+    && conda run -n download python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='${CHECKPOINT_REPO}', repo_type='dataset', revision='${CHECKPOINT_REVISION}', allow_patterns='checkpoints/*', local_dir='data')" \
+    && rm -rf data/.cache \
     && (cd data && find checkpoints -type f -print0 | sort -z | xargs -0 sha256sum > checkpoints.sha256) \
-    && conda run -n download python -m pip show modelscope | grep -E '^(Name|Version)' > data/checkpoints.downloader \
+    && { echo "repo ${CHECKPOINT_REPO} (HuggingFace dataset) revision ${CHECKPOINT_REVISION}"; \
+         conda run -n download python -m pip show huggingface_hub | grep -E '^(Name|Version)'; } > data/checkpoints.source \
     && conda clean -afy
 
 # Steps that only need scripts/isaac45 (the toolchain, Isaac Sim, Isaac Lab, cuRobo clone into third_party/).
@@ -95,8 +99,8 @@ RUN --mount=type=cache,target=/root/.cache/pip bash scripts/isaac45/install.sh -
 RUN bash scripts/isaac45/install.sh --check
 
 # What this image is, for the manifest each evaluation writes.
-RUN printf '{"fork_commit": "%s", "upstream_commit": "%s", "cuda_arch": "%s", "miniforge": "%s", "download_revision": "%s", "built_utc": "%s"}\n' \
+RUN printf '{"fork_commit": "%s", "upstream_commit": "%s", "cuda_arch": "%s", "miniforge": "%s", "checkpoints": "%s", "built_utc": "%s"}\n' \
         "$(git rev-parse HEAD)" "${UPSTREAM_COMMIT}" "${UNIVTAC45_CUDA_ARCH}" "${MINIFORGE_VERSION}" \
-        "${DOWNLOAD_REVISION}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /workspace/build_info.json
+        "${CHECKPOINT_REPO}@${CHECKPOINT_REVISION}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /workspace/build_info.json
 
 ENTRYPOINT ["bash", "/workspace/univtac/scripts/isaac45/docker/pod_start.sh"]
