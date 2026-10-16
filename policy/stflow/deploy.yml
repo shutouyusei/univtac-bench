@@ -1,0 +1,8 @@
+policy_name: stflow
+seed: 0
+instruction_type: seen
+instuction_file: null   # stflow takes no instruction (as ACT/deploy.yml)
+stflow_ckpt_dir: /abs/path/to/streaming-tactile-flow/outputs/<run>/checkpoints/last
+stflow_method_args: {}
+stflow_device: cuda:0
+stflow_jpeg_roundtrip: true
