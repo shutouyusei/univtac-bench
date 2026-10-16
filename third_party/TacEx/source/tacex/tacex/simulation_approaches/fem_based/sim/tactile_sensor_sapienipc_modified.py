@@ -61,6 +61,7 @@ class VisionTactileSensorUIPC:
         camera_to_surface: float = 0.0283,
         real_size: tuple[float, float] = (0.0266, 0.0209),
         marker_radius: float = 12,
+        marker_weight_method: str = 'delaunay',
         **kwargs,
     ):
         """
@@ -73,6 +74,7 @@ class VisionTactileSensorUIPC:
         param: normalize: whether to normalize the output marker flow
         param: marker_flow_size: the size of the output marker flow
         param: camera_params: (fx, fy, cx, cy, distortion)
+        param: marker_weight_method: 'delaunay' or 'nearest_face', see ManiSkillSimulatorCfg.marker_weight_method
         """
         
         self.gelpad_obj = uipc_gelpad
@@ -106,6 +108,9 @@ class VisionTactileSensorUIPC:
 
         self.sub_marker_num = sub_marker_num
         self.marker_radius = marker_radius
+        if marker_weight_method not in ('delaunay', 'nearest_face'):
+            raise ValueError(f"Unknown marker_weight_method: {marker_weight_method}")
+        self.marker_weight_method = marker_weight_method
 
         real_size = np.array(real_size)
         img_size = np.array([tactile_img_width, tactile_img_height])
@@ -251,6 +256,11 @@ class VisionTactileSensorUIPC:
         return marker_grid
     
     def _gen_marker_weight(self, marker_pts):
+        if self.marker_weight_method == 'nearest_face':
+            return self._gen_marker_weight_nearest_face(marker_pts)
+        return self._gen_marker_weight_delaunay(marker_pts)
+
+    def _gen_marker_weight_delaunay(self, marker_pts):
         surface_pts = self.init_surface_vertices_camera.cpu().numpy()[:, :2]
         surface_pts = surface_pts - (surface_pts.min(axis=0) + surface_pts.max(axis=0)) / 2
 
@@ -268,6 +278,60 @@ class VisionTactileSensorUIPC:
         w12 = np.einsum("nij,nj->ni", transform[:, :2, :], marker_pts - transform[:, 2, :])
         marker_pts_surface_weight = np.column_stack((w12, 1 - w12.sum(axis=1)))
 
+        assert np.allclose(
+            (surface_pts[marker_pts_surface_idx] * marker_pts_surface_weight[..., None]).sum(1)[:, :2],
+            marker_pts,
+        ), (
+            "max err:"
+            f" {np.abs((surface_pts[marker_pts_surface_idx] * marker_pts_surface_weight[..., None]).sum(1)[:, :2] - marker_pts).max()}"
+        )
+
+        return marker_pts_surface_idx, marker_pts_surface_weight
+
+    def _gen_marker_weight_nearest_face(self, marker_pts):
+        # Binds each marker to the first of its 4 nearest surface faces (by face centre) that contains it, else to
+        # the nearest one, with barycentric weights on the raw camera-frame points (no recentring).
+        from sklearn.neighbors import NearestNeighbors
+
+        surface_pts = self.init_surface_vertices_camera.cpu().numpy()[:, :2]
+
+        face_idx_to_surface_idx = np.zeros(np.max(self.faces_on_surfaces)+1, dtype=np.int32)
+        face_idx_to_surface_idx[self.vertices_on_surface] = np.arange(surface_pts.shape[0])
+        faces_v_on_surface = surface_pts[face_idx_to_surface_idx[self.faces_on_surfaces.flatten()]].reshape(-1, 3, 2)
+        f_centers = np.mean(faces_v_on_surface, axis=1)
+
+        nbrs = NearestNeighbors(n_neighbors=4, algorithm="ball_tree").fit(f_centers)
+        distances, face_idx = nbrs.kneighbors(marker_pts)
+
+        marker_pts_surface_idx = []
+        marker_pts_surface_weight = []
+        valid_marker_idx = []
+
+        for i in range(marker_pts.shape[0]):
+            possible_face_ids = face_idx[i]
+            p = marker_pts[i]
+            for possible_face_id in possible_face_ids.tolist():
+                face_vertices_idx = face_idx_to_surface_idx[self.faces_on_surfaces[possible_face_id]]
+                vertices_of_face_i = surface_pts[face_vertices_idx]
+                p0, p1, p2 = vertices_of_face_i
+                A = np.stack([p1 - p0, p2 - p0], axis=1)
+                w12 = np.linalg.inv(A) @ (p - p0)
+                if possible_face_id == possible_face_ids[0]:
+                    marker_pts_surface_idx.append(face_vertices_idx)
+                    marker_pts_surface_weight.append(np.array([1 - w12.sum(), w12[0], w12[1]]))
+                    valid_marker_idx.append(i)
+                    if w12[0] >= 0 and w12[1] >= 0 and w12[0] + w12[1] <= 1:
+                        break
+                elif w12[0] >= 0 and w12[1] >= 0 and w12[0] + w12[1] <= 1:
+                    marker_pts_surface_idx[-1] = face_vertices_idx
+                    marker_pts_surface_weight[-1] = np.array([1 - w12.sum(), w12[0], w12[1]])
+                    valid_marker_idx[-1] = i
+                    break
+
+        valid_marker_idx = np.array(valid_marker_idx).astype(np.int32)
+        marker_pts = marker_pts[valid_marker_idx]
+        marker_pts_surface_idx = np.stack(marker_pts_surface_idx)
+        marker_pts_surface_weight = np.stack(marker_pts_surface_weight)
         assert np.allclose(
             (surface_pts[marker_pts_surface_idx] * marker_pts_surface_weight[..., None]).sum(1)[:, :2],
             marker_pts,
